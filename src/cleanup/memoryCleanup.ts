@@ -25,7 +25,7 @@ interface ArchiveEntry {
   archivePath: string;
   movedAt: string;
   category: string;
-  sizes: number;
+  size: number;
 }
 
 function loadArchiveIndex(): ArchiveEntry[] {
@@ -73,7 +73,7 @@ export function runMemoryCleanup(): void {
             archivePath: archivePath,
             movedAt: now.toISOString(),
             category: entry.category,
-            sizes: stat.size,
+            size: stat.size,
           });
           logger.info({ path: entry.path, archivePath }, '[CLEANUP] Archived context');
         }

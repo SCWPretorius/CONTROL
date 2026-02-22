@@ -4,7 +4,6 @@ dist/
 .env.*
 !.env.example
 logs/
-data/memory/embeddings/
-data/executions/
+data/
 *.jsonl
 *.tsbuildinfo

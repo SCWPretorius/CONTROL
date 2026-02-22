@@ -13,6 +13,25 @@ import { logger } from '../logging/logger.js';
 
 export const approvalRouter = Router();
 
+// Simple in-memory rate limiter: max 30 requests per minute per IP
+const historyRateMap = new Map<string, { count: number; windowStart: number }>();
+function historyRateLimiter(req: Request, res: Response, next: () => void): void {
+  const ip = req.ip ?? 'unknown';
+  const now = Date.now();
+  const windowMs = 60_000;
+  const maxRequests = 30;
+  const entry = historyRateMap.get(ip);
+  if (!entry || now - entry.windowStart >= windowMs) {
+    historyRateMap.set(ip, { count: 1, windowStart: now });
+    next();
+  } else if (entry.count < maxRequests) {
+    entry.count++;
+    next();
+  } else {
+    res.status(429).json({ error: 'Too many requests' });
+  }
+}
+
 function ensureDir(): void {
   mkdirSync(config.approval.auditLogPath, { recursive: true });
 }
@@ -72,7 +91,7 @@ approvalRouter.post('/:approvalId/decide', (req: Request, res: Response) => {
   res.json({ success: true, status: approval.status });
 });
 
-approvalRouter.get('/history', (req: Request, res: Response) => {
+approvalRouter.get('/history', historyRateLimiter, (req: Request, res: Response) => {
   ensureDir();
   const limit = parseInt((req.query['limit'] as string) ?? '20', 10);
   try {
