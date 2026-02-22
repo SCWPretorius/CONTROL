@@ -23,14 +23,18 @@ export const config = {
   webhookBaseUrl: process.env['WEBHOOK_BASE_URL'] ?? 'http://localhost:3000',
   heartbeatIntervalMs: parseInt(process.env['HEARTBEAT_INTERVAL_MS'] ?? '30000', 10),
   encryptionKey: process.env['ENCRYPTION_KEY'] ?? '',
-  ollama: {
-    url: process.env['OLLAMA_URL'] ?? 'http://localhost:11434',
-    primaryModel: process.env['LLM_PRIMARY_MODEL'] ?? 'qwen3:4b',
+  lmstudio: {
+    url: process.env['LMSTUDIO_URL'] ?? process.env['OLLAMA_URL'] ?? 'http://localhost:1234/v1',
+    primaryModel: process.env['LLM_PRIMARY_MODEL'] ?? 'local-model',
     fallbackModels: [
-      { model: process.env['LLM_FALLBACK_1'] ?? 'mistral:7b', timeoutMs: 8000 },
-      { model: process.env['LLM_FALLBACK_2'] ?? 'phi:2.7b', timeoutMs: 10000 },
+      ...(process.env['LLM_FALLBACK_1']
+        ? [{ model: process.env['LLM_FALLBACK_1'], timeoutMs: 10000 }]
+        : []),
+      ...(process.env['LLM_FALLBACK_2']
+        ? [{ model: process.env['LLM_FALLBACK_2'], timeoutMs: 12000 }]
+        : []),
     ],
-    primaryTimeoutMs: 5000,
+    primaryTimeoutMs: parseInt(process.env['LLM_PRIMARY_TIMEOUT_MS'] ?? '15000', 10),
   },
   telegram: {
     botToken: process.env['TELEGRAM_BOT_TOKEN'] ?? '',

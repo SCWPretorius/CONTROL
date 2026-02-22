@@ -18,7 +18,7 @@ export function getLLMStatus(): LLMStatus {
   return currentStatus;
 }
 
-async function callOllama(
+async function callLMStudio(
   model: string,
   prompt: string,
   timeoutMs: number
@@ -27,24 +27,38 @@ async function callOllama(
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(`${config.ollama.url}/api/generate`, {
+    const response = await fetch(`${config.lmstudio.url}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model,
-        prompt,
-        stream: false,
-        options: { temperature: 0.1, num_predict: 512 },
+        messages: [
+          { role: 'system', content: 'You are CONTROL, a focused personal assistant. Output ONLY valid JSON, no other text.' },
+          { role: 'user', content: prompt },
+        ],
+        temperature: 0.1,
+        max_tokens: 1024,
       }),
       signal: controller.signal,
     });
 
     if (!response.ok) {
-      throw new Error(`Ollama returned ${response.status}`);
+      const text = await response.text().catch(() => 'Unable to read response');
+      logger.error({ status: response.status, text }, `[LLM] API returned error`);
+      throw new Error(`LM Studio returned ${response.status}`);
     }
 
-    const data = await response.json() as { response: string };
-    return data.response;
+    const data = await response.json() as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+
+    const content = data.choices?.[0]?.message?.content ?? '';
+    
+    if (!content) {
+      logger.warn({ data }, '[LLM] API returned empty content');
+    }
+
+    return content;
   } finally {
     clearTimeout(timer);
   }
@@ -80,25 +94,26 @@ export async function decide(
   const availableSkills = skills.map(s => s.name);
 
   try {
-    const raw = await callOllama(
-      config.ollama.primaryModel,
+    const raw = await callLMStudio(
+      config.lmstudio.primaryModel,
       prompt,
-      config.ollama.primaryTimeoutMs
+      config.lmstudio.primaryTimeoutMs
     );
+    logger.debug({ raw: raw.slice(0, 500) }, '[LLM] Raw response from primary model');
     const decision = validateLLMOutput(raw, availableSkills);
     if (decision) {
       currentStatus = 'primary-ok';
-      return { decision, model: config.ollama.primaryModel, status: 'success' };
+      return { decision, model: config.lmstudio.primaryModel, status: 'success' };
     }
   } catch (err) {
-    logger.warn({ err }, `[LLM-PRIMARY-DOWN] ${config.ollama.primaryModel} unreachable → falling back`);
+    logger.warn({ err }, `[LLM-PRIMARY-DOWN] ${config.lmstudio.primaryModel} unreachable → falling back`);
   }
 
-  for (let i = 0; i < config.ollama.fallbackModels.length; i++) {
-    const fb = config.ollama.fallbackModels[i];
+  for (let i = 0; i < config.lmstudio.fallbackModels.length; i++) {
+    const fb = config.lmstudio.fallbackModels[i];
     if (!fb) continue;;
     try {
-      const raw = await callOllama(fb.model, prompt, fb.timeoutMs);
+      const raw = await callLMStudio(fb.model, prompt, fb.timeoutMs);
       const decision = validateLLMOutput(raw, availableSkills);
       if (decision) {
         currentStatus = i === 0 ? 'fallback-1' : 'fallback-2';

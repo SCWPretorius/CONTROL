@@ -32,29 +32,48 @@ export function sanitizeInput(text: string): string {
 const decisionSchema = z.object({
   skill: z.string().min(1),
   params: z.record(z.string(), z.unknown()),
-  reasoning: z.string(),
+  reasoning: z.string().optional(),
 });
 
 export function validateLLMOutput(
   raw: string,
   availableSkills: string[]
 ): LLMDecision | null {
+  if (typeof raw !== 'string' || raw.length === 0) {
+    logger.warn({ rawType: typeof raw }, '[LLM] Empty or non-string response');
+    return null;
+  }
   let parsed: unknown;
   try {
-    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    // Try to find JSON object - look for last complete JSON object in case of thinking models
+    let jsonMatch = raw.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
-      logger.warn('[LLM] No JSON found in response');
+      logger.warn({ raw: raw.slice(0, 300) }, '[LLM] No JSON found in response');
       return null;
     }
-    parsed = JSON.parse(jsonMatch[0]);
+    
+    // Try to parse, if it fails, try to find the last valid JSON object
+    let jsonStr = jsonMatch[0];
+    try {
+      parsed = JSON.parse(jsonStr);
+    } catch {
+      // Look for multiple JSON objects and take the last one
+      const allMatches = raw.match(/\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g);
+      if (allMatches && allMatches.length > 0) {
+        jsonStr = allMatches[allMatches.length - 1];
+        parsed = JSON.parse(jsonStr);
+      } else {
+        throw new Error('No valid JSON found');
+      }
+    }
   } catch {
-    logger.warn({ raw: raw.slice(0, 200) }, '[LLM] Failed to parse JSON response');
+    logger.warn({ raw: raw.slice(0, 500) }, '[LLM] Failed to parse JSON response');
     return null;
   }
 
   const result = decisionSchema.safeParse(parsed);
   if (!result.success) {
-    logger.warn({ error: result.error.message }, '[LLM] Invalid decision schema');
+    logger.warn({ error: result.error.message, parsed }, '[LLM] Invalid decision schema');
     return null;
   }
 
@@ -74,6 +93,6 @@ export function validateLLMOutput(
   return {
     skill: decision.skill,
     params: decision.params,
-    reasoning: decision.reasoning,
+    reasoning: decision.reasoning || 'No reasoning provided',
   };
 }

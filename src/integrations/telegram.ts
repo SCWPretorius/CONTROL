@@ -5,6 +5,7 @@ import { config } from '../config/config.js';
 import { logger } from '../logging/logger.js';
 
 let eventCallback: ((event: NormalizedEvent) => void) | null = null;
+let lastUpdateId = 0;
 
 export function validateTelegramSignature(body: string, signature: string): boolean {
   if (!config.telegram.webhookSecret) return true;
@@ -16,16 +17,37 @@ export function validateTelegramSignature(body: string, signature: string): bool
 
 function normalizeUpdate(update: Record<string, unknown>): NormalizedEvent | null {
   const message = update['message'] as Record<string, unknown> | undefined;
-  if (!message) return null;
+  if (!message) {
+    logger.debug({ update }, '[TELEGRAM] Skipping non-message update');
+    return null;
+  }
 
   const from = message['from'] as Record<string, unknown> | undefined;
+  const text = message['text'] as string | undefined;
+  const chat = message['chat'] as Record<string, unknown> | undefined;
+
+  // Skip messages without text (photos, stickers, etc.)
+  if (!text || text.trim().length === 0) {
+    logger.debug({ messageId: message['message_id'] }, '[TELEGRAM] Skipping message without text');
+    return null;
+  }
 
   return {
     id: uuidv4(),
     traceId: uuidv4(),
     source: 'telegram',
     type: 'message',
-    payload: { update },
+    payload: {
+      text,
+      chatId: chat?.['id']?.toString() ?? from?.['id']?.toString() ?? '',
+      messageId: message['message_id'],
+      from: {
+        id: from?.['id'],
+        firstName: from?.['first_name'],
+        username: from?.['username'],
+      },
+      update,
+    },
     timestamp: new Date().toISOString(),
     userId: from?.['id']?.toString(),
     role: 'user',
@@ -38,16 +60,38 @@ const telegramIntegration = {
   async poll(): Promise<NormalizedEvent[] | null> {
     if (!config.telegram.botToken) return null;
     try {
-      const response = await fetch(
-        `https://api.telegram.org/bot${config.telegram.botToken}/getUpdates?timeout=5`
-      );
+      const offset = lastUpdateId > 0 ? lastUpdateId + 1 : undefined;
+      const url = new URL(`https://api.telegram.org/bot${config.telegram.botToken}/getUpdates`);
+      url.searchParams.set('timeout', '5');
+      if (offset) {
+        url.searchParams.set('offset', offset.toString());
+      }
+
+      const response = await fetch(url.toString());
       if (!response.ok) return null;
+
       const data = await response.json() as { ok: boolean; result: Record<string, unknown>[] };
-      if (!data.ok) return null;
-      return data.result
+      if (!data.ok || !data.result || data.result.length === 0) return null;
+
+      // Update lastUpdateId to the highest update_id received
+      for (const update of data.result) {
+        const updateId = update['update_id'] as number;
+        if (updateId > lastUpdateId) {
+          lastUpdateId = updateId;
+        }
+      }
+
+      const events = data.result
         .map(u => normalizeUpdate(u))
         .filter(Boolean) as NormalizedEvent[];
-    } catch {
+
+      if (events.length > 0) {
+        logger.debug({ count: events.length, lastUpdateId }, '[TELEGRAM] Processed updates');
+      }
+
+      return events;
+    } catch (err) {
+      logger.error({ err }, '[TELEGRAM] Poll failed');
       return null;
     }
   },

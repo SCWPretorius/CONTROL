@@ -38,7 +38,7 @@ export interface ContextIndex {
 export interface LLMDecision {
   skill: string;
   params: Record<string, unknown>;
-  reasoning: string;
+  reasoning?: string;
 }
 
 export interface SkillDefinition {

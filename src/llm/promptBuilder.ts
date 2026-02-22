@@ -1,6 +1,29 @@
 import { NormalizedEvent, SkillDefinition } from '../types/index.js';
 import { RetrievedContext } from '../memory/contextRetriever.js';
 import { sanitizeInput } from './sanitizer.js';
+import { z } from 'zod';
+
+function getZodTypeName(schema: z.ZodTypeAny): string {
+  const typeName = schema._def.typeName;
+  if (typeName === 'ZodString') return 'string';
+  if (typeName === 'ZodNumber') return 'number';
+  if (typeName === 'ZodBoolean') return 'boolean';
+  if (typeName === 'ZodArray') return 'array';
+  if (typeName === 'ZodObject') return 'object';
+  if (typeName === 'ZodOptional') return getZodTypeName(schema._def.innerType) + '?';
+  return 'any';
+}
+
+function formatSkillParams(paramsSchema: z.ZodObject<any>): string {
+  const shape = paramsSchema.shape;
+  const params = Object.entries(shape).map(([key, schema]) => {
+    const zodSchema = schema as z.ZodTypeAny;
+    const type = getZodTypeName(zodSchema);
+    const description = zodSchema.description || '';
+    return `    ${key}: ${type}${description ? ` - ${description}` : ''}`;
+  });
+  return params.join('\n');
+}
 
 export function buildPrompt(
   event: NormalizedEvent,
@@ -19,8 +42,8 @@ export function buildPrompt(
     .join('\n\n');
 
   const skillList = skills
-    .map(s => `- ${s.name}(${Object.keys(s.paramsSchema.shape).join(', ')}): ${s.description}`)
-    .join('\n');
+    .map(s => `- ${s.name}: ${s.description}\n${formatSkillParams(s.paramsSchema)}`)
+    .join('\n\n');
 
   const eventSummary = sanitizeInput(JSON.stringify(event, null, 2).slice(0, 500));
 
@@ -47,6 +70,9 @@ Think step-by-step:
 4. Parameters?
 5. If unsure → Clarify: ...
 
-Output JSON only:
+**CRITICAL**: Your response must be ONLY a single valid JSON object, nothing else. No explanations, no thinking out loud.
+Use correct types: strings in "quotes", booleans as true/false, numbers without quotes.
+
+JSON OUTPUT:
 { "skill": "<name>", "params": {...}, "reasoning": "..." }`;
 }
