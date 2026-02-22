@@ -45,7 +45,12 @@ function saveApproval(approval: ApprovalRequest): void {
 }
 
 approvalRouter.get('/:approvalId/code', (req: Request, res: Response) => {
-  const approval = loadApproval(String(req.params['approvalId'] ?? ''));
+  const approvalId = req.params['approvalId'];
+  if (!approvalId || typeof approvalId !== 'string') {
+    res.status(400).json({ error: 'Missing approvalId' });
+    return;
+  }
+  const approval = loadApproval(approvalId);
   if (!approval) {
     res.status(404).json({ error: 'Approval not found' });
     return;
@@ -54,7 +59,12 @@ approvalRouter.get('/:approvalId/code', (req: Request, res: Response) => {
 });
 
 approvalRouter.post('/:approvalId/decide', (req: Request, res: Response) => {
-  const approval = loadApproval(String(req.params['approvalId'] ?? ''));
+  const approvalId = req.params['approvalId'];
+  if (!approvalId || typeof approvalId !== 'string') {
+    res.status(400).json({ error: 'Missing approvalId' });
+    return;
+  }
+  const approval = loadApproval(approvalId);
   if (!approval) {
     res.status(404).json({ error: 'Approval not found' });
     return;

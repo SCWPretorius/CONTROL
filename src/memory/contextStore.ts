@@ -118,9 +118,9 @@ export function initDefaultContexts(): void {
     content:
       'You are CONTROL, a personal assistant. Use concise language. If unsure, ask rather than assume. Time zone: SAST (UTC+2). No meetings before 08:00 or after 18:00 unless explicitly allowed.',
   };
-  const path = 'user-preferences.json';
-  if (!existsSync(join(CONTEXTS_DIR, path))) {
-    saveContext(path, defaultCtx);
+  const contextPath = 'user-preferences.json';
+  if (!existsSync(join(CONTEXTS_DIR, contextPath))) {
+    saveContext(contextPath, defaultCtx);
     logger.info('[MEMORY] Default context initialized');
   }
 }

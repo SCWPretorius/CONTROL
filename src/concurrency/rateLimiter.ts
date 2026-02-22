@@ -61,7 +61,8 @@ export function checkRateLimit(source: string): { allowed: boolean; reason?: str
 
   w.count++;
   w.burst++;
-  setTimeout(() => { if (w) w.burst = Math.max(0, w.burst - 1); }, 1000);
+  const capturedWindow = w;
+  setTimeout(() => { capturedWindow.burst = Math.max(0, capturedWindow.burst - 1); }, 1000);
 
   return { allowed: true };
 }

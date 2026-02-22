@@ -95,7 +95,8 @@ export async function decide(
   }
 
   for (let i = 0; i < config.ollama.fallbackModels.length; i++) {
-    const fb = config.ollama.fallbackModels[i]!;
+    const fb = config.ollama.fallbackModels[i];
+    if (!fb) continue;;
     try {
       const raw = await callOllama(fb.model, prompt, fb.timeoutMs);
       const decision = validateLLMOutput(raw, availableSkills);
