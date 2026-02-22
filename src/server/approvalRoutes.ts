@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import rateLimit from 'express-rate-limit';
 import {
   readFileSync,
   writeFileSync,
@@ -13,8 +14,12 @@ import { logger } from '../logging/logger.js';
 
 export const approvalRouter = Router();
 
-// In-memory rate state: max 30 requests per minute per IP for /history
-const historyRateMap = new Map<string, { count: number; windowStart: number }>();
+const historyLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 function ensureDir(): void {
   mkdirSync(config.approval.auditLogPath, { recursive: true });
@@ -75,23 +80,7 @@ approvalRouter.post('/:approvalId/decide', (req: Request, res: Response) => {
   res.json({ success: true, status: approval.status });
 });
 
-approvalRouter.get('/history', (req: Request, res: Response) => {
-  // Inline rate limiting: max 30 requests per minute per IP
-  const ip = req.ip ?? 'unknown';
-  const now = Date.now();
-  const windowMs = 60_000;
-  const maxRequests = 30;
-  const entry = historyRateMap.get(ip);
-  if (entry && now - entry.windowStart < windowMs && entry.count >= maxRequests) {
-    res.status(429).json({ error: 'Too many requests' });
-    return;
-  }
-  if (!entry || now - entry.windowStart >= windowMs) {
-    historyRateMap.set(ip, { count: 1, windowStart: now });
-  } else {
-    entry.count++;
-  }
-
+approvalRouter.get('/history', historyLimiter, (req: Request, res: Response) => {
   ensureDir();
   const limit = parseInt((req.query['limit'] as string) ?? '20', 10);
   try {
