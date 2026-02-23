@@ -4,6 +4,7 @@ import { eventBus } from '../events/eventBus.js';
 import telegramIntegration from '../integrations/telegram.js';
 import discordIntegration from '../integrations/discord.js';
 import googleCalendarIntegration from '../integrations/googleCalendar.js';
+import { getGoogleAuthStatus, getGoogleAuthUrl, exchangeCodeForTokens } from '../integrations/googleCalendar.js';
 import { skillRegistry } from '../skills/skillRegistry.js';
 import { integrationRegistry } from '../integrations/integrationLoader.js';
 import { getIntegrationHealth } from '../integrations/integrationRunner.js';
@@ -83,6 +84,35 @@ app.post('/webhooks/calendar', (req: Request, res: Response) => {
   const body = JSON.stringify(req.body ?? {});
   googleCalendarIntegration.handlePushWebhook(body, token);
   res.status(200).end();
+});
+
+app.get('/auth/google/start', (_req: Request, res: Response) => {
+  try {
+    const url = getGoogleAuthUrl();
+    res.redirect(url);
+  } catch (err) {
+    logger.error({ err }, '[SERVER] Failed to start Google OAuth');
+    res.status(500).json({ error: 'Google OAuth is not configured' });
+  }
+});
+
+app.get('/auth/google/callback', async (req: Request, res: Response) => {
+  const code = req.query['code'];
+  if (!code || typeof code !== 'string') {
+    res.status(400).json({ error: 'Missing OAuth code' });
+    return;
+  }
+  try {
+    await exchangeCodeForTokens(code);
+    res.status(200).send('Google Calendar connected. You can close this window.');
+  } catch (err) {
+    logger.error({ err }, '[SERVER] Google OAuth callback failed');
+    res.status(500).json({ error: 'Google OAuth failed' });
+  }
+});
+
+app.get('/auth/google/status', (_req: Request, res: Response) => {
+  res.json(getGoogleAuthStatus());
 });
 
 app.use('/api/approval', approvalRouter);

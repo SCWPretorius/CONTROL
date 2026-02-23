@@ -22,6 +22,8 @@ export const config = {
   host: process.env['HOST'] ?? '0.0.0.0',
   webhookBaseUrl: process.env['WEBHOOK_BASE_URL'] ?? 'http://localhost:3000',
   heartbeatIntervalMs: parseInt(process.env['HEARTBEAT_INTERVAL_MS'] ?? '30000', 10),
+  timezone: process.env['TIMEZONE'] ?? '',
+  adminUserIds: (process.env['ADMIN_USER_IDS'] ?? '').split(',').map(s => s.trim()).filter(Boolean),
   encryptionKey: process.env['ENCRYPTION_KEY'] ?? '',
   lmstudio: {
     url: process.env['LMSTUDIO_URL'] ?? process.env['OLLAMA_URL'] ?? 'http://localhost:1234/v1',
@@ -48,6 +50,12 @@ export const config = {
     clientId: process.env['GOOGLE_CLIENT_ID'] ?? '',
     clientSecret: process.env['GOOGLE_CLIENT_SECRET'] ?? '',
     redirectUri: process.env['GOOGLE_REDIRECT_URI'] ?? '',
+    calendars: {
+      primary: process.env['GOOGLE_CALENDAR_PRIMARY'] ?? 'primary',
+      family: process.env['GOOGLE_CALENDAR_FAMILY'] ?? '',
+      wife: process.env['GOOGLE_CALENDAR_WIFE'] ?? '',
+      holidays: process.env['GOOGLE_CALENDAR_HOLIDAYS'] ?? '',
+    },
   },
   dataDir: resolve(process.cwd(), 'data'),
   logsDir: resolve(process.cwd(), 'logs'),

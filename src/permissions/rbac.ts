@@ -15,6 +15,7 @@ interface SkillPermission {
 const SKILL_PERMISSIONS: Record<string, SkillPermission> = {
   sendMessage: { minRole: 'user', requiresApproval: false, dailyLimit: 100 },
   queryCalendar: { minRole: 'user', requiresApproval: false, dailyLimit: 50 },
+  createCalendarEvent: { minRole: 'user', requiresApproval: false, dailyLimit: 30 },
   deleteCalendarEvent: { minRole: 'admin', requiresApproval: true, dailyLimit: 10 },
   updateContext: { minRole: 'admin', requiresApproval: true, dailyLimit: 50 },
 };

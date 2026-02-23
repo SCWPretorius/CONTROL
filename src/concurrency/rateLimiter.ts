@@ -19,6 +19,7 @@ const INTEGRATION_LIMITS: Record<string, { perMinute: number; burst: number; coo
 const SKILL_LIMITS: Record<string, { maxConcurrent: number }> = {
   sendMessage: { maxConcurrent: 1 },
   queryCalendar: { maxConcurrent: 3 },
+  createCalendarEvent: { maxConcurrent: 2 },
   deleteCalendarEvent: { maxConcurrent: 1 },
 };
 

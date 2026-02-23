@@ -4,7 +4,7 @@ import {
   existsSync,
   mkdirSync,
 } from 'fs';
-import { join, extname } from 'path';
+import { join, extname, dirname } from 'path';
 import { config } from '../config/config.js';
 import { ContextFile, ContextIndex } from '../types/index.js';
 import { logger } from '../logging/logger.js';
@@ -58,10 +58,8 @@ export function loadContext(relativePath: string): ContextFile | null {
 export function saveContext(relativePath: string, ctx: ContextFile): void {
   ensureDirs();
   const fullPath = join(CONTEXTS_DIR, relativePath);
-  const lastSlash = fullPath.lastIndexOf('/');
-  if (lastSlash > 0) {
-    mkdirSync(fullPath.substring(0, lastSlash), { recursive: true });
-  }
+  const dir = dirname(fullPath);
+  mkdirSync(dir, { recursive: true });
   writeFileSync(fullPath, JSON.stringify(ctx, null, 2), 'utf-8');
 
   const index = loadIndex();
