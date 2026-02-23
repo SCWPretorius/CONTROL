@@ -1,4 +1,5 @@
 import './config/config.js';
+import { config } from './config/config.js';
 import { eventBus } from './events/eventBus.js';
 import { startServer } from './server/server.js';
 import { startHeartbeat } from './heartbeat/heartbeat.js';
@@ -18,6 +19,7 @@ import { logger } from './logging/logger.js';
 
 import sendMessageSkill from './skills/sendMessage.js';
 import queryCalendarSkill from './skills/queryCalendar.js';
+import createCalendarEventSkill from './skills/createCalendarEvent.js';
 import deleteCalendarEventSkill from './skills/deleteCalendarEvent.js';
 import updateContextSkill from './skills/updateContext.js';
 
@@ -69,11 +71,13 @@ async function handleEvent(event: NormalizedEvent): Promise<void> {
 
 async function main(): Promise<void> {
   logger.info('[CONTROL] Starting up...');
+  logger.info({ adminUserIds: config.adminUserIds }, '[CONTROL] Admin users configured');
 
   initDefaultContexts();
 
   skillRegistry.registerBuiltin(sendMessageSkill);
   skillRegistry.registerBuiltin(queryCalendarSkill);
+  skillRegistry.registerBuiltin(createCalendarEventSkill);
   skillRegistry.registerBuiltin(deleteCalendarEventSkill);
   skillRegistry.registerBuiltin(updateContextSkill);
 

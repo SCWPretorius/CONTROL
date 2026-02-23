@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import { NormalizedEvent, LLMDecision, ExecutionRecord } from '../types/index.js';
+import { NormalizedEvent, LLMDecision, ExecutionRecord, SkillExecutionError } from '../types/index.js';
 import { skillRegistry } from '../skills/skillRegistry.js';
 import { checkPermission, recordUsage } from '../permissions/rbac.js';
 import { acquireSkillSlot } from '../concurrency/rateLimiter.js';
@@ -70,13 +70,23 @@ export async function executeDecision(
     saveExecution(record);
 
     recordUsage(skillName, event);
+    
+    // Store result in event payload for next LLM decision to reference
+    event.payload.lastSkillResult = {
+      skill: skillName,
+      result,
+      timestamp: new Date().toISOString(),
+    };
+    
     logger.info({ skillName, execId }, '[EXECUTOR] Skill executed successfully');
     return { success: true, result };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
-    logger.error({ err, skillName, execId, retries }, '[EXECUTOR] Skill execution failed');
+    const isNonRetryable = err instanceof SkillExecutionError && !err.retryable;
+    
+    logger.error({ err, skillName, execId, retries, isNonRetryable }, '[EXECUTOR] Skill execution failed');
 
-    if (retries < MAX_RETRIES - 1) {
+    if (!isNonRetryable && retries < MAX_RETRIES - 1) {
       record.status = 'pending';
       record.retries++;
       record.updatedAt = new Date().toISOString();

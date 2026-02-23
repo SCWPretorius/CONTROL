@@ -2,6 +2,16 @@ import { z } from 'zod';
 
 export type Role = 'guest' | 'user' | 'admin';
 
+export class SkillExecutionError extends Error {
+  constructor(
+    message: string,
+    public readonly retryable: boolean = true
+  ) {
+    super(message);
+    this.name = 'SkillExecutionError';
+  }
+}
+
 export interface NormalizedEvent {
   id: string;
   traceId: string;

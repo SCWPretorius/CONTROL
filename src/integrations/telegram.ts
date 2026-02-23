@@ -32,7 +32,10 @@ function normalizeUpdate(update: Record<string, unknown>): NormalizedEvent | nul
     return null;
   }
 
-  return {
+  const role = config.adminUserIds.includes(from?.['id']?.toString() ?? '') ? 'admin' : 'user';
+  const userId = from?.['id']?.toString();
+
+  const event: NormalizedEvent = {
     id: uuidv4(),
     traceId: uuidv4(),
     source: 'telegram',
@@ -49,9 +52,20 @@ function normalizeUpdate(update: Record<string, unknown>): NormalizedEvent | nul
       update,
     },
     timestamp: new Date().toISOString(),
-    userId: from?.['id']?.toString(),
-    role: 'user',
+    userId,
+    role,
   };
+  
+  logger.debug(
+    { 
+      userId, 
+      adminUserIds: config.adminUserIds, 
+      role 
+    }, 
+    '[TELEGRAM] User role assigned'
+  );
+  
+  return event;
 }
 
 const telegramIntegration = {

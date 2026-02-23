@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { SkillModule, NormalizedEvent } from '../types/index.js';
+import { SkillModule, NormalizedEvent, SkillExecutionError } from '../types/index.js';
 import { logger } from '../logging/logger.js';
 import { integrationRegistry } from '../integrations/integrationLoader.js';
 
@@ -32,13 +32,13 @@ export async function execute(
   const target = parsed.target || (event.payload as any).chatId || event.userId;
   
   if (!target) {
-    throw new Error('No target specified and unable to determine chat ID from event');
+    throw new SkillExecutionError('No target specified and unable to determine chat ID from event', false);
   }
   
   // Get the integration for this event source
   const integration = integrationRegistry.get(event.source);
   if (!integration || !integration.send) {
-    throw new Error(`Integration ${event.source} does not support sending messages`);
+    throw new SkillExecutionError(`Integration ${event.source} does not support sending messages`, false);
   }
   
   // Send the message via the integration
