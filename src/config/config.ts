@@ -57,6 +57,13 @@ export const config = {
       holidays: process.env['GOOGLE_CALENDAR_HOLIDAYS'] ?? '',
     },
   },
+  homeAssistant: {
+    baseUrl: process.env['HOME_ASSISTANT_URL'] ?? '',
+    monitoredEntities: (process.env['HOME_ASSISTANT_MONITORED_ENTITIES'] ?? '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean),
+  },
   dataDir: resolve(process.cwd(), 'data'),
   logsDir: resolve(process.cwd(), 'logs'),
   memoryDir: resolve(process.cwd(), 'data', 'memory'),
@@ -64,6 +71,13 @@ export const config = {
   approvalsDir: resolve(process.cwd(), 'data', 'approvals'),
   integrationsDir: resolve(process.cwd(), 'integrations'),
   skillsDir: resolve(process.cwd(), 'skills'),
+  queueEnabled: process.env['QUEUE_ENABLED'] !== 'false',
+  queueDbPath: process.env['QUEUE_DB_PATH'] ?? 'data/queue.db',
+  queueAutoRetryEnabled: process.env['QUEUE_AUTO_RETRY_ENABLED'] !== 'false',
+  queueRetryIntervalMs: parseInt(process.env['QUEUE_RETRY_INTERVAL_MS'] ?? '10000', 10),
+  queueMaxRetries: parseInt(process.env['QUEUE_MAX_RETRIES'] ?? '5', 10),
+  queueMessageTtlMs: parseInt(process.env['QUEUE_MESSAGE_TTL_MS'] ?? '86400000', 10),
+  queueCleanupIntervalMs: parseInt(process.env['QUEUE_CLEANUP_INTERVAL_MS'] ?? '3600000', 10),
   backup: {
     encryptionKey: process.env['BACKUP_ENCRYPTION_KEY'] ?? '',
     s3Bucket: process.env['BACKUP_S3_BUCKET'] ?? '',
@@ -93,5 +107,14 @@ export const config = {
     pollTimeoutMs: 30000,
     healthCheckIntervalMs: 5 * 60 * 1000,
     maxBackoffMs: 5 * 60 * 1000,
+  },
+  queue: {
+    enabled: process.env['QUEUE_ENABLED'] !== 'false',
+    dbPath: process.env['QUEUE_DB_PATH'] ?? 'data/queue.db',
+    autoRetryEnabled: process.env['QUEUE_AUTO_RETRY_ENABLED'] !== 'false',
+    retryIntervalMs: parseInt(process.env['QUEUE_RETRY_INTERVAL_MS'] ?? '10000', 10),
+    maxRetries: parseInt(process.env['QUEUE_MAX_RETRIES'] ?? '5', 10),
+    messageTtlMs: parseInt(process.env['QUEUE_MESSAGE_TTL_MS'] ?? '86400000', 10),
+    cleanupIntervalMs: parseInt(process.env['QUEUE_CLEANUP_INTERVAL_MS'] ?? '3600000', 10),
   },
 } as const;

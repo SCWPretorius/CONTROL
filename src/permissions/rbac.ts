@@ -18,6 +18,9 @@ const SKILL_PERMISSIONS: Record<string, SkillPermission> = {
   createCalendarEvent: { minRole: 'user', requiresApproval: false, dailyLimit: 30 },
   deleteCalendarEvent: { minRole: 'admin', requiresApproval: true, dailyLimit: 10 },
   updateContext: { minRole: 'admin', requiresApproval: true, dailyLimit: 50 },
+  queryHomeAssistant: { minRole: 'user', requiresApproval: false, dailyLimit: 100 },
+  listHomeAssistantEntities: { minRole: 'user', requiresApproval: false, dailyLimit: 50 },
+  findHomeAssistantEntity: { minRole: 'user', requiresApproval: false, dailyLimit: 100 },
 };
 
 const INTEGRATION_ACCESS: Record<string, Role> = {
@@ -27,6 +30,7 @@ const INTEGRATION_ACCESS: Record<string, Role> = {
   gmail: 'admin',
   aws: 'admin',
   azure: 'admin',
+  'home-assistant': 'user',
 };
 
 const dailyUsage: Map<string, number> = new Map();

@@ -122,3 +122,22 @@ export interface ApprovalRequest {
   decidedAt?: string;
   decidedBy?: string;
 }
+
+export type QueueMessageType = 'incoming' | 'outgoing';
+export type QueueMessageStatus = 'pending' | 'processing' | 'completed' | 'failed';
+
+export interface QueueMessage {
+  id: string;
+  type: QueueMessageType;
+  status: QueueMessageStatus;
+  source: string;
+  targetChannel?: string;
+  payload: Record<string, unknown>;
+  event?: NormalizedEvent;
+  error?: string;
+  retryCount: number;
+  maxRetries: number;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+}

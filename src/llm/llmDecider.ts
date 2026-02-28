@@ -71,6 +71,17 @@ function deterministicMatch(
   const text = JSON.stringify(event).toLowerCase();
 
   for (const skill of skills) {
+    // Only match skills that don't have required parameters (to avoid execution failures)
+    const shape = (skill.paramsSchema as any).shape || {};
+    const hasRequiredParams = Object.entries(shape).some(
+      ([key, schema]: any) => !schema._def?.optional && schema._def?.typeName !== 'ZodOptional'
+    );
+    
+    if (hasRequiredParams) {
+      // Skip skills with required params in deterministic mode
+      continue;
+    }
+
     const nameMatch = text.includes(skill.name.toLowerCase());
     const tagMatch = skill.tags.some(t => text.includes(t.toLowerCase()));
     if (nameMatch || tagMatch) {

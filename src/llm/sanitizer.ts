@@ -31,7 +31,7 @@ export function sanitizeInput(text: string): string {
 
 const decisionSchema = z.object({
   skill: z.string().min(1),
-  params: z.record(z.string(), z.unknown()),
+  params: z.record(z.string(), z.unknown()).optional().default({}),
   reasoning: z.string().optional(),
 });
 
@@ -79,7 +79,9 @@ export function validateLLMOutput(
 
   const decision = result.data;
 
-  if (!availableSkills.includes(decision.skill)) {
+  // Allow "Clarify" responses even though they're not real skills
+  const isClarifyResponse = decision.skill.startsWith('Clarify');
+  if (!isClarifyResponse && !availableSkills.includes(decision.skill)) {
     logger.warn({ skill: decision.skill }, '[LLM] Unknown skill in decision');
     return null;
   }

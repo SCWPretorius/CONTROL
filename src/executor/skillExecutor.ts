@@ -26,6 +26,12 @@ export async function executeDecision(
 ): Promise<{ success: boolean; result?: unknown; error?: string }> {
   const { skill: skillName, params } = decision;
 
+  // Clarify responses are not executable skills
+  if (skillName.startsWith('Clarify')) {
+    logger.info({ clarification: skillName }, '[EXECUTOR] Clarify response received');
+    return { success: false, error: `${skillName}` };
+  }
+
   const perm = checkPermission(skillName, event);
   if (!perm.allowed) {
     logger.warn({ skillName, reason: perm.reason }, '[EXECUTOR] Permission denied');

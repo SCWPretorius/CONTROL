@@ -12,6 +12,7 @@ import { getLLMStatus } from '../llm/llmDecider.js';
 import { getVectorCount } from '../memory/vectorStore.js';
 import { logger } from '../logging/logger.js';
 import { approvalRouter } from './approvalRoutes.js';
+import queueRouter from './queueRoutes.js';
 
 const app = express();
 
@@ -116,6 +117,8 @@ app.get('/auth/google/status', (_req: Request, res: Response) => {
 });
 
 app.use('/api/approval', approvalRouter);
+
+app.use('/api', queueRouter);
 
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   logger.error({ err }, '[SERVER] Unhandled error');

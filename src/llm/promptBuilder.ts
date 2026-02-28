@@ -33,13 +33,22 @@ export function buildPrompt(
 ): string {
   const nowIso = new Date().toISOString();
   const highPriority = contexts.filter(c => c.method === 'always');
-  const other = contexts.filter(c => c.method !== 'always');
+  let other = contexts.filter(c => c.method !== 'always');
 
-  const coreRules = highPriority
+  // Truncate Home Assistant entities context if it's too large (limit to ~1500 chars)
+  const updatedHighPriority = highPriority.map(c => {
+    if (c.context.label === 'home-assistant-entities' && c.context.content.length > 1500) {
+      const truncated = c.context.content.slice(0, 1500) + '\n\n(... see listHomeAssistantEntities skill for more)';
+      return { ...c, context: { ...c.context, content: truncated } };
+    }
+    return c;
+  });
+
+  const coreRules = updatedHighPriority
     .map(c => `[Label: ${c.context.label}]\n${c.context.content}`)
     .join('\n\n');
 
-  const retrievedMemory = other
+  let retrievedMemory = other
     .map(c => `[Label: ${c.context.label}] (score: ${c.score.toFixed(2)}, method: ${c.method})\n${c.context.content}`)
     .join('\n\n');
 
@@ -116,12 +125,31 @@ ${eventSummary}
 ## Available Skills
 ${skillList || '(No skills loaded)'}
 
+## Home Assistant Guidance
+WORKFLOW FOR HOME ASSISTANT QUERIES:
+1. User mentions a device/sensor by friendly name (e.g., "beams in the driveway", "motion sensor", "temperature")
+2. If you know the exact entity ID → Use queryHomeAssistant(entityIds: "the.entity.id")
+3. If you DON'T know the exact entity ID → Use findHomeAssistantEntity(query: "user's description") to search first
+   - DO NOT specify a domain filter on first attempt - search broadly
+   - If no results, try a simpler/shorter search term
+   - Only use domain filter if the first search returns too many results
+4. Once you have the entity ID from the search result → Use queryHomeAssistant with that ID
+
+Examples:
+- User: "Is the driveway armed?" → findHomeAssistantEntity(query: "driveway armed") (no domain!) → find entity → queryHomeAssistant
+- User: "What's the temperature?" → findHomeAssistantEntity(query: "temperature") (no domain!) → find entity → queryHomeAssistant
+- User: "Turn on the kitchen light" → clarify that this system can only query states, not control devices
+
 Think step-by-step:
 1. What does the user/event want?
 2. Which contexts apply?
-3. Which skill (or none) should be used? Why?
-4. Parameters?
-5. If unsure → Clarify: ...
+3. Is this about a Home Assistant device/sensor state? 
+   - If YES and you know the entity ID → Use queryHomeAssistant directly
+   - If YES but you need to find the entity ID → Use findHomeAssistantEntity first, then queryHomeAssistant
+   - If NO → Use other skills or clarify
+4. Which skill (or none) should be used? Why?
+5. Parameters?
+6. If unsure → Clarify: ...
 
 **CRITICAL**: Your response must be ONLY a single valid JSON object, nothing else. No explanations, no thinking out loud.
 Use correct types: strings in "quotes", booleans as true/false, numbers without quotes.

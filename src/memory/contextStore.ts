@@ -104,6 +104,55 @@ export function getHighPriorityContexts(): ContextFile[] {
   return highPaths.map(p => loadContext(p)).filter(Boolean) as ContextFile[];
 }
 
+export async function updateHomeAssistantContext(entities: Array<{entity_id: string; state: string; attributes: Record<string, unknown>}>): Promise<void> {
+  const domains = new Map<string, number>();
+  const recentEntities: Array<{entityId: string; state: string; friendlyName?: string}> = [];
+  
+  for (const entity of entities) {
+    const domain = entity.entity_id.split('.')[0] ?? 'unknown';
+    domains.set(domain, (domains.get(domain) ?? 0) + 1);
+    
+    // Keep only the most recently updated entities (limit to 15 total)
+    if (recentEntities.length < 15) {
+      const friendlyName = (entity.attributes?.['friendly_name'] as string) || undefined;
+      recentEntities.push({
+        entityId: entity.entity_id,
+        state: entity.state,
+        friendlyName,
+      });
+    }
+  }
+
+  // Create a concise summary
+  const domainSummary = Array.from(domains.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([domain, count]) => `${domain}: ${count}`)
+    .join(', ');
+
+  const recentList = recentEntities
+    .map(e => `    ${e.entityId}: ${e.state}${e.friendlyName ? ` (${e.friendlyName})` : ''}`)
+    .join('\n');
+
+  const ctx: ContextFile = {
+    label: 'home-assistant-entities',
+    category: 'personal',
+    priority: 'high',
+    lastUpdated: new Date().toISOString(),
+    version: 1,
+    tags: ['home-assistant', 'entities', 'devices'],
+    content: `Home Assistant Entities: ${domains.size} domains, ${entities.length} total entities
+Available domains: ${domainSummary}
+
+Recent/Sample entities:
+${recentList}
+
+To query a specific device state, use queryHomeAssistant skill.
+To list all entities in a domain, use listHomeAssistantEntities skill.`,
+  };
+  
+  saveContext('home-assistant-entities.json', ctx);
+}
+
 export function initDefaultContexts(): void {
   ensureDirs();
   const defaultCtx: ContextFile = {

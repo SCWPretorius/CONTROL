@@ -1,6 +1,7 @@
 import { NormalizedEvent } from '../types/index.js';
 import { v4 as uuidv4 } from 'uuid';
 import { google, calendar_v3 } from 'googleapis';
+import type { OAuth2Client, Credentials } from 'google-auth-library';
 import { config } from '../config/config.js';
 import { logger } from '../logging/logger.js';
 import { getSecret, setSecret } from '../config/secrets.js';
@@ -16,11 +17,11 @@ function ensureGoogleConfig(): void {
   }
 }
 
-function loadTokens(): google.auth.Credentials | null {
+function loadTokens(): Credentials | null {
   const raw = getSecret(GOOGLE_TOKEN_SECRET);
   if (!raw) return null;
   try {
-    return JSON.parse(raw) as google.auth.Credentials;
+    return JSON.parse(raw) as Credentials;
   } catch (err) {
     logger.warn({ err }, '[CALENDAR] Failed to parse stored OAuth tokens');
     return null;
@@ -28,9 +29,9 @@ function loadTokens(): google.auth.Credentials | null {
 }
 
 function mergeTokens(
-  existing: google.auth.Credentials | null,
-  incoming: google.auth.Credentials
-): google.auth.Credentials {
+  existing: Credentials | null,
+  incoming: Credentials
+): Credentials {
   return {
     ...existing,
     ...incoming,
@@ -38,11 +39,11 @@ function mergeTokens(
   };
 }
 
-function saveTokens(tokens: google.auth.Credentials): void {
+function saveTokens(tokens: Credentials): void {
   setSecret(GOOGLE_TOKEN_SECRET, JSON.stringify(tokens));
 }
 
-function createOAuthClient(): google.auth.OAuth2 {
+function createOAuthClient(): OAuth2Client {
   ensureGoogleConfig();
   const client = new google.auth.OAuth2(
     config.google.clientId,
@@ -93,7 +94,7 @@ export function getGoogleAuthStatus(): {
   return { configured, connected, hasRefreshToken };
 }
 
-export function getAuthorizedClient(): google.auth.OAuth2 {
+export function getAuthorizedClient(): OAuth2Client {
   const client = createOAuthClient();
   const tokens = loadTokens();
   if (!tokens) {
