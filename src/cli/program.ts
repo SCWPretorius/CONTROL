@@ -4,7 +4,7 @@ export function createProgram(): Command {
   const program = new Command();
 
   program
-    .name('openclaw')
+    .name('CONTROL')
     .description('CONTROL gateway CLI')
     .version('0.1.0');
 
