@@ -7,6 +7,7 @@ import { logger } from '../logging/logger.js';
 import { runAgent } from '../agents/agent-runner.js';
 import type { AgentBlock } from '../agents/types.js';
 import { channelRegistry } from '../channels/registry.js';
+import { pluginRegistry } from '../plugins/registry.js';
 
 type MethodHandler = (params: Record<string, unknown>, sessionId: string) => Promise<unknown>;
 
@@ -116,6 +117,16 @@ const methods: Record<string, MethodHandler> = {
     await channel.send(chatId, text);
     return { ok: true };
   },
+
+  'plugins.list': async () => ({
+    plugins: pluginRegistry.getAll().map(p => ({
+      name: p.manifest.name,
+      version: p.manifest.version,
+      description: p.manifest.description,
+      toolCount: p.module.tools?.length ?? 0,
+      hooks: p.manifest.hooks,
+    })),
+  }),
 };
 
 export function registerMethod(name: string, handler: MethodHandler): void {

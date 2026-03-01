@@ -1,0 +1,8 @@
+{
+  "name": "example-plugin",
+  "version": "1.0.0",
+  "description": "Example CONTROL plugin demonstrating tools and startup hooks",
+  "entry": "index.js",
+  "tools": ["echo"],
+  "hooks": ["startup"]
+}

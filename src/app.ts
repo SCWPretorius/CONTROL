@@ -21,6 +21,9 @@ import { startQueueWorker, setEventHandler, setMessageSender } from './queue/que
 import { channelRegistry } from './channels/registry.js';
 import { telegramChannel } from './channels/telegram.js';
 import { discordChannel } from './channels/discord.js';
+import { loadPlugins } from './plugins/loader.js';
+import { validateConfig } from './config/io.js';
+import { migrateConfig } from './config/migration.js';
 
 import sendMessageSkill from './skills/sendMessage.js';
 import queryCalendarSkill from './skills/queryCalendar.js';
@@ -172,7 +175,9 @@ async function handleEvent(event: NormalizedEvent): Promise<void> {
 
 export async function initApp(): Promise<void> {
   logger.info('[CONTROL] Starting up...');
-  logger.info({ adminUserIds: config.adminUserIds }, '[CONTROL] Admin users configured');
+
+  migrateConfig();
+  validateConfig();
 
   initDefaultContexts();
 
@@ -251,6 +256,9 @@ export async function initApp(): Promise<void> {
   startHeartbeat();
   scheduleMemoryCleanup();
   scheduleBackups();
+
+  // Load plugins after skills/integrations/channels are ready
+  await loadPlugins();
 
   eventBus.on('event', handleEvent);
 
