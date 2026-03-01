@@ -3,6 +3,7 @@ import { RetrievedContext } from '../memory/contextRetriever.js';
 import { sanitizeInput } from './sanitizer.js';
 import { config } from '../config/config.js';
 import { z } from 'zod';
+import { cacheEntitySelection } from '../memory/entitySelectionCache.js';
 
 function getZodTypeName(schema: z.ZodTypeAny): string {
   const typeName = (schema._def as any).typeName;
@@ -109,6 +110,60 @@ ${retrievedMemory || '(No additional memory retrieved)'}
 ${(() => {
   const last = event.payload?.lastSkillResult as any;
   if (!last) return '(None - this is the first message)';
+  
+  // Special handling for selectEntityFromOptions result (user just picked an option number)
+  if (last.skill === 'selectEntityFromOptions' && last.result?.candidates) {
+    // Check if current user message is just a number (1, 2, or 3)
+    const userMsg = (event.payload?.text as string ?? '').trim();
+    const selectedNum = parseInt(userMsg, 10);
+    
+    if (!isNaN(selectedNum) && selectedNum >= 1 && selectedNum <= (last.result.candidates?.length || 0)) {
+      const candidates = last.result.candidates as any[];
+      const selected = candidates[selectedNum - 1];
+      if (selected) {
+        // Cache the entity selection for future use
+        try {
+          // Extract query from original selectEntityFromOptions params
+          const originalQuery = ((event.payload?.text as string) || '').trim();
+          cacheEntitySelection(
+            originalQuery || 'entity selection',
+            selected.entityId,
+            selected.friendlyName,
+            selected.domain,
+            selected.confidence || 100
+          );
+        } catch (err) {
+          // Ignore caching errors
+        }
+        
+        return `ENTITY SELECTION DETECTED: User picked option ${selectedNum}
+Selected Entity: **${selected.friendlyName}** 
+Entity ID: ${selected.entityId}
+Domain: ${selected.domain}
+Confidence: ${selected.confidence || 'N/A'}%
+
+ACTION: Use queryHomeAssistant with entityIds: "${selected.entityId}" to get the current state.
+The entity has been cached for future reference to this query.`;
+      }
+    }
+  }
+  
+  // Special handling for ambiguous entity search results
+  if (last.skill === 'findHomeAssistantEntity' && (last.result?.isAmbiguous === true || (last.result?.matches?.length ?? 0) > 1)) {
+    return `Last skill executed: ${last.skill} — IMPORTANT: AMBIGUOUS RESULTS DETECTED
+Result: Multiple entities matched the user's query
+
+Matches found:
+${(last.result.matches || []).map((m: any, i: number) => 
+  `  (${i + 1}) ${m.friendlyName} [${m.confidence || '?'}%] - domain: ${m.domain} - ID: ${m.entityId}`
+).join('\n')}
+
+ACTION REQUIRED: Call selectEntityFromOptions with these candidates so the user can pick which entity they meant.
+Extract matches into the candidates parameter and include the user's original query.
+
+Otherwise, if there is only ONE match with high confidence (>75%), use queryHomeAssistant with that entity ID.`;
+  }
+  
   return `Last skill executed: ${last.skill}
 Result: ${JSON.stringify(last.result, null, 2).slice(0, 1000)}
 
@@ -125,31 +180,88 @@ ${eventSummary}
 ## Available Skills
 ${skillList || '(No skills loaded)'}
 
-## Home Assistant Guidance
-WORKFLOW FOR HOME ASSISTANT QUERIES:
-1. User mentions a device/sensor by friendly name (e.g., "beams in the driveway", "motion sensor", "temperature")
-2. If you know the exact entity ID → Use queryHomeAssistant(entityIds: "the.entity.id")
-3. If you DON'T know the exact entity ID → Use findHomeAssistantEntity(query: "user's description") to search first
-   - DO NOT specify a domain filter on first attempt - search broadly
-   - If no results, try a simpler/shorter search term
-   - Only use domain filter if the first search returns too many results
-4. Once you have the entity ID from the search result → Use queryHomeAssistant with that ID
+## Home Assistant Entity Selection Reasoning
+IMPORTANT: When selecting Home Assistant entities, reason through these steps:
 
-Examples:
-- User: "Is the driveway armed?" → findHomeAssistantEntity(query: "driveway armed") (no domain!) → find entity → queryHomeAssistant
-- User: "What's the temperature?" → findHomeAssistantEntity(query: "temperature") (no domain!) → find entity → queryHomeAssistant
-- User: "Turn on the kitchen light" → clarify that this system can only query states, not control devices
+STEP 1: UNDERSTAND USER INTENT
+- What state is the user asking about? (armed/disarmed, on/off, motion detected, temperature, etc.)
+- What area or device did they mention? (driveway, kitchen, bedroom, etc.)
+- Are they asking about a control (partition, switch) or a sensor (motion, door)?
+
+STEP 2: SEMANTIC ANALYSIS
+- Armed/Disarmed states → Look for: partitions, switches with armed capability, binary_sensors with armed_disarmed device class
+- Motion/Movement → Look for: binary_sensors with motion device class
+- Temperature → Look for: sensors with temperature device class
+- On/Off states → Look for: switches, lights, input_boolean entities
+- Position/Opening → Look for: covers (doors, shutters)
+
+STEP 3: ENTITY RELATIONSHIP REASONING
+- If user asks "Are driveway beams armed?" the entity might be:
+  - Direct entity: "binary_sensor.driveway_beams_armed"
+  - Control entity: "switch.driveway_partition" (the partition that controls those beams)
+  - A partition controls multiple sensors in an area
+  - Prefer the CONTROL entity (partition/switch) over sensors if asking about "armed" state
+
+STEP 4: SEARCH AND CONFIDENCE
+When calling findHomeAssistantEntity:
+  - Return results indicate: entityId, friendlyName, domain, deviceClass, confidence %
+  - Confidence > 75% means high confidence - can use directly
+  - Confidence 50-75% means ambiguous - consider selectEntityFromOptions
+  - Confidence < 50% means poor match - try different search terms or ask user for clarification
+  - Multiple results with similar confidence (within 15%) = ambiguous situation
+
+STEP 5: DISAMBIGUATE IF NEEDED
+If findHomeAssistantEntity returns multiple candidates with similar confidence:
+- Use selectEntityFromOptions to present top 2-3 options to the user
+- Include confidence scores and entity types to help user decide
+- Explain the reasoning: "Option 1 is a partition (controls the beams), Option 2 is a motion sensor"
+- Wait for user to confirm which entity they meant
+
+STEP 6: EXECUTE THE QUERY
+Once you have an entity ID with high confidence, use queryHomeAssistant to get its state.
+
+## Workflow Examples
+Example 1: "Is the driveway armed?"
+1. Intent: User asking about armed/disarmed state
+2. Semantic: "armed" keywords + "driveway" area → look for armed_disarmed entities
+3. Search: findHomeAssistantEntity(query: "driveway armed") [no domain filter!]
+4. Results: partition.driveway (95%), binary_sensor.driveway_beams (60%)
+5. Action: Confidence is high (95%) → Use partition directly → queryHomeAssistant(entityIds: "partition.driveway")
+
+Example 2: "Are the driveway beams armed?"
+1. Intent: User asking about a specific sensor's state, but context is "armed" (not typical for sensors)
+2. Semantic: "beams" is a sensor component, but "armed" is a partition state → user probably means the partition
+3. Search: findHomeAssistantEntity(query: "driveway beams armed") → find both
+4. Results: partition.driveway (88%), sensor.driveway_beams (72%)
+5. Action: Results are ambiguous (12% difference) → selectEntityFromOptions to confirm → wait for user
+
+Example 3: "What's the kitchen temperature?"
+1. Intent: User asking for temperature reading
+2. Semantic: "temperature" is a sensor measurement value
+3. Search: findHomeAssistantEntity(query: "kitchen temperature") → find sensors
+4. Result: sensor.kitchen_temperature (95%) - single high-confidence result
+5. Action: Use sensor directly → queryHomeAssistant(entityIds: "sensor.kitchen_temperature")
+
+## Core Rule for Ambiguity
+- NEVER guess between multiple equally-likely entities
+- ALWAYS use selectEntityFromOptions when confidence < 75% OR multiple results within 15% confidence
+- This ensures user experience is clear and mapping is cached for future requests
+
+## Available Workflow
+- queryHomeAssistant: Query exact entity state when you have the entity ID
+- findHomeAssistantEntity: Search for entity by name when you don't know the exact ID
+- selectEntityFromOptions: Ask user to pick from multiple candidates (when ambiguous)
+- listHomeAssistantEntities: Browse all entities in a specific domain
 
 Think step-by-step:
-1. What does the user/event want?
-2. Which contexts apply?
-3. Is this about a Home Assistant device/sensor state? 
-   - If YES and you know the entity ID → Use queryHomeAssistant directly
-   - If YES but you need to find the entity ID → Use findHomeAssistantEntity first, then queryHomeAssistant
-   - If NO → Use other skills or clarify
-4. Which skill (or none) should be used? Why?
-5. Parameters?
-6. If unsure → Clarify: ...
+1. What does the user want?
+2. Is this about Home Assistant?
+3. If YES: Do I know the exact entity ID?
+   - If YES → queryHomeAssistant directly (use full ID: "domain.entity_name")
+   - If NO → findHomeAssistantEntity to search (let ranking + confidence guide you)
+4. If findHomeAssistantEntity returns ambiguous results (< 75% confidence OR multiple similar matches)
+   → Use selectEntityFromOptions to ask user
+5. If unsure about anything → Clarify: [question]
 
 **CRITICAL**: Your response must be ONLY a single valid JSON object, nothing else. No explanations, no thinking out loud.
 Use correct types: strings in "quotes", booleans as true/false, numbers without quotes.

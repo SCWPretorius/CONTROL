@@ -75,19 +75,41 @@ approvalRouter.post('/:approvalId/decide', (req: Request, res: Response) => {
     return;
   }
 
-  const { action, userId } = req.body as { action: 'approve' | 'reject'; userId?: string };
-  if (!['approve', 'reject'].includes(action)) {
-    res.status(400).json({ error: 'Invalid action' });
-    return;
+  const { action, selection, userId } = req.body as {
+    action?: 'approve' | 'reject';
+    selection?: number;
+    userId?: string;
+  };
+
+  // Support both traditional approve/reject and numeric entity selection
+  if (selection !== undefined && typeof selection === 'number') {
+    // Entity selection response
+    approval.status = 'approved';
+    approval.metadata = approval.metadata || {};
+    (approval.metadata as any).selectedOption = selection;
+    approval.decidedAt = new Date().toISOString();
+    approval.decidedBy = userId ?? 'unknown';
+    saveApproval(approval);
+
+    logger.info(
+      { approvalId: approval.id, selectedOption: selection },
+      '[APPROVAL-ENTITY-SELECTION]'
+    );
+    res.json({ success: true, status: approval.status, selectedOption: selection });
+  } else if (action && ['approve', 'reject'].includes(action)) {
+    // Traditional approve/reject
+    approval.status = action === 'approve' ? 'approved' : 'rejected';
+    approval.decidedAt = new Date().toISOString();
+    approval.decidedBy = userId ?? 'unknown';
+    saveApproval(approval);
+
+    logger.info({ approvalId: approval.id, action }, `[APPROVAL-${action.toUpperCase()}]`);
+    res.json({ success: true, status: approval.status });
+  } else {
+    res.status(400).json({
+      error: 'Missing or invalid action/selection parameter',
+    });
   }
-
-  approval.status = action === 'approve' ? 'approved' : 'rejected';
-  approval.decidedAt = new Date().toISOString();
-  approval.decidedBy = userId ?? 'unknown';
-  saveApproval(approval);
-
-  logger.info({ approvalId: approval.id, action }, `[APPROVAL-${action.toUpperCase()}]`);
-  res.json({ success: true, status: approval.status });
 });
 
 approvalRouter.get('/history', historyLimiter, (req: Request, res: Response) => {

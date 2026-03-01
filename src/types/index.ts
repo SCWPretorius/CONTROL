@@ -121,6 +121,7 @@ export interface ApprovalRequest {
   status: 'pending' | 'approved' | 'rejected' | 'timeout';
   decidedAt?: string;
   decidedBy?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export type QueueMessageType = 'incoming' | 'outgoing';
