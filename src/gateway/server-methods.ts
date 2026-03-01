@@ -6,6 +6,7 @@ import { getIntegrationHealth } from '../integrations/integrationRunner.js';
 import { logger } from '../logging/logger.js';
 import { runAgent } from '../agents/agent-runner.js';
 import type { AgentBlock } from '../agents/types.js';
+import { channelRegistry } from '../channels/registry.js';
 
 type MethodHandler = (params: Record<string, unknown>, sessionId: string) => Promise<unknown>;
 
@@ -89,6 +90,31 @@ const methods: Record<string, MethodHandler> = {
     );
 
     return { ok: true, blocksEmitted };
+  },
+
+  'channels.list': async () => ({
+    channels: channelRegistry.getAll().map(c => ({
+      name: c.name,
+      maxMessageLength: c.capabilities.maxMessageLength,
+      supportsMarkdown: c.capabilities.supportsMarkdown,
+    })),
+  }),
+
+  'channels.send': async (params) => {
+    const { channel: channelName, chatId, text } = params;
+    if (typeof channelName !== 'string' || !channelName) {
+      throw new Error('params.channel must be a non-empty string');
+    }
+    if (typeof chatId !== 'string' || !chatId) {
+      throw new Error('params.chatId must be a non-empty string');
+    }
+    if (typeof text !== 'string' || !text) {
+      throw new Error('params.text must be a non-empty string');
+    }
+    const channel = channelRegistry.get(channelName);
+    if (!channel) throw new Error(`Channel not found: ${channelName}`);
+    await channel.send(chatId, text);
+    return { ok: true };
   },
 };
 

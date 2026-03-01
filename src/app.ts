@@ -18,6 +18,9 @@ import { logger } from './logging/logger.js';
 import { initializeQueueDatabase } from './queue/queueSchema.js';
 import { initializeMessageQueue, getMessageQueue } from './queue/messageQueue.js';
 import { startQueueWorker, setEventHandler, setMessageSender } from './queue/queueWorker.js';
+import { channelRegistry } from './channels/registry.js';
+import { telegramChannel } from './channels/telegram.js';
+import { discordChannel } from './channels/discord.js';
 
 import sendMessageSkill from './skills/sendMessage.js';
 import queryCalendarSkill from './skills/queryCalendar.js';
@@ -186,6 +189,9 @@ export async function initApp(): Promise<void> {
   integrationRegistry.register(discordIntegration);
   integrationRegistry.register(googleCalendarIntegration);
   integrationRegistry.register(homeAssistantIntegration);
+
+  channelRegistry.register(telegramChannel);
+  channelRegistry.register(discordChannel);
 
   await resumePendingExecutions();
 

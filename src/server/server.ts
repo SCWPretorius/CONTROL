@@ -1,8 +1,8 @@
 import express, { Request, Response, NextFunction } from 'express';
 import { config } from '../config/config.js';
 import { eventBus } from '../events/eventBus.js';
-import telegramIntegration from '../integrations/telegram.js';
-import discordIntegration from '../integrations/discord.js';
+import telegramIntegration, { validateTelegramSignature } from '../integrations/telegram.js';
+import discordIntegration, { validateDiscordSignature } from '../integrations/discord.js';
 import googleCalendarIntegration from '../integrations/googleCalendar.js';
 import { getGoogleAuthStatus, getGoogleAuthUrl, exchangeCodeForTokens } from '../integrations/googleCalendar.js';
 import { skillRegistry } from '../skills/skillRegistry.js';
@@ -13,6 +13,7 @@ import { getVectorCount } from '../memory/vectorStore.js';
 import { logger } from '../logging/logger.js';
 import { approvalRouter } from './approvalRoutes.js';
 import queueRouter from './queueRoutes.js';
+import { routeEvent } from '../channels/router.js';
 
 const app = express();
 
@@ -52,12 +53,13 @@ app.get('/health', (_req: Request, res: Response) => {
 app.post('/webhooks/telegram', (req: Request, res: Response) => {
   const signature = req.headers['x-telegram-bot-api-secret-token'] as string ?? '';
   const body = JSON.stringify(req.body);
-  const event = telegramIntegration.handleWebhook(body, signature);
-  if (!event) {
+  if (!validateTelegramSignature(body, signature)) {
     res.status(401).json({ error: 'Invalid signature' });
     return;
   }
-  eventBus.enqueue(event);
+  // handleWebhook returns null for non-message updates (photos, stickers, etc.) — that's fine
+  const event = telegramIntegration.handleWebhook(body, signature);
+  if (event) void routeEvent(event);
   res.json({ ok: true });
 });
 
@@ -71,12 +73,12 @@ app.post('/webhooks/discord', (req: Request, res: Response) => {
     return;
   }
 
-  const event = discordIntegration.handleWebhook(body, signature, timestamp);
-  if (!event) {
+  if (!validateDiscordSignature(body, signature, timestamp)) {
     res.status(401).json({ error: 'Invalid signature' });
     return;
   }
-  eventBus.enqueue(event);
+  const event = discordIntegration.handleWebhook(body, signature, timestamp);
+  if (event) void routeEvent(event);
   res.json({ type: 5 });
 });
 
