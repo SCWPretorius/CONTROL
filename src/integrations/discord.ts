@@ -55,15 +55,35 @@ const discordIntegration = {
     }
     try {
       const interaction = JSON.parse(body) as Record<string, unknown>;
+
+      // Extract user ID from member (guild) or user (DM) objects
+      const member = interaction['member'] as Record<string, unknown> | undefined;
+      const directUser = interaction['user'] as Record<string, unknown> | undefined;
+      const userObj = (member?.['user'] as Record<string, unknown> | undefined) ?? directUser;
+      const userId = userObj?.['id']?.toString();
+
+      const role = config.adminUserIds.includes(userId ?? '') ? 'admin' : 'user';
+
+      // Extract channel, text (from first slash-command option if present)
+      const channelId = interaction['channel_id'] as string | undefined;
+      const interactionData = interaction['data'] as Record<string, unknown> | undefined;
+      const options = interactionData?.['options'] as Array<Record<string, unknown>> | undefined;
+      const firstOptionValue = options?.[0]?.['value'];
+      const text = typeof firstOptionValue === 'string' ? firstOptionValue : '';
+
+      // Map Discord interaction type 2 (APPLICATION_COMMAND) to 'message'
+      const interactionType = interaction['type'] as number;
+      const eventType = interactionType === 2 ? 'message' : `interaction:${interactionType}`;
+
       const event: NormalizedEvent = {
         id: uuidv4(),
         traceId: uuidv4(),
         source: 'discord',
-        type: (interaction['type'] as string) ?? 'interaction',
-        payload: { interaction },
+        type: eventType,
+        payload: { text, chatId: channelId ?? '', interaction },
         timestamp: new Date().toISOString(),
-        userId: (interaction['member'] as Record<string, unknown>)?.['user']?.toString(),
-        role: 'user',
+        userId,
+        role,
       };
       if (eventCallback) eventCallback(event);
       return event;

@@ -3,11 +3,16 @@
   "version": "0.1.0",
   "description": "CONTROL – Personal Jarvis-like Assistant",
   "main": "dist/index.js",
+  "bin": {
+    "control": "dist/entry.js"
+  },
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "start": "node --loader ts-node/esm src/index.ts",
+    "start": "node dist/entry.js gateway run",
+    "start:http": "node --loader ts-node/esm src/index.ts",
     "dev": "tsx watch src/index.ts",
+    "dev:gateway": "tsx src/entry.ts gateway run",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src --ext .ts",
@@ -34,6 +39,7 @@
   "dependencies": {
     "axios": "^1.13.5",
     "chokidar": "^5.0.0",
+    "commander": "^14.0.3",
     "discord.js": "^14.25.1",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
@@ -46,11 +52,13 @@
     "sqlite3": "^5.0.2",
     "telegraf": "^4.16.3",
     "uuid": "^13.0.0",
+    "ws": "^8.19.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^25.3.0",
+    "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^8.56.0",
     "@typescript-eslint/parser": "^8.56.0",
     "eslint": "^10.0.1",
