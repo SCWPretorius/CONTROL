@@ -4,6 +4,8 @@ import { skillRegistry } from '../skills/skillRegistry.js';
 import { getLLMStatus } from '../llm/llmDecider.js';
 import { getIntegrationHealth } from '../integrations/integrationRunner.js';
 import { logger } from '../logging/logger.js';
+import { runAgent } from '../agents/agent-runner.js';
+import type { AgentBlock } from '../agents/types.js';
 
 type MethodHandler = (params: Record<string, unknown>, sessionId: string) => Promise<unknown>;
 
@@ -38,6 +40,56 @@ const methods: Record<string, MethodHandler> = {
       minRole: d.minRole,
     })),
   }),
+
+  chat: async (params, sessionId) => {
+    const message = params.message;
+    if (typeof message !== 'string' || !message.trim()) {
+      throw new Error('params.message must be a non-empty string');
+    }
+
+    const client = runtimeState.getClient(sessionId);
+    const userId = client?.deviceId ?? sessionId;
+    let blocksEmitted = 0;
+
+    await runAgent(
+      { wsSessionId: sessionId, userId, role: 'admin', source: 'gateway', message },
+      (block: AgentBlock) => {
+        blocksEmitted++;
+        runtimeState.push(sessionId, {
+          event: 'agent:block',
+          data: block,
+          ts: new Date().toISOString(),
+        });
+      },
+    );
+
+    return { ok: true, blocksEmitted };
+  },
+
+  agent: async (params, sessionId) => {
+    const message = params.message;
+    if (typeof message !== 'string' || !message.trim()) {
+      throw new Error('params.message must be a non-empty string');
+    }
+
+    const client = runtimeState.getClient(sessionId);
+    const userId = client?.deviceId ?? sessionId;
+    let blocksEmitted = 0;
+
+    await runAgent(
+      { wsSessionId: sessionId, userId, role: 'admin', source: 'gateway', message },
+      (block: AgentBlock) => {
+        blocksEmitted++;
+        runtimeState.push(sessionId, {
+          event: 'agent:block',
+          data: block,
+          ts: new Date().toISOString(),
+        });
+      },
+    );
+
+    return { ok: true, blocksEmitted };
+  },
 };
 
 export function registerMethod(name: string, handler: MethodHandler): void {

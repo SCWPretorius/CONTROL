@@ -6,26 +6,35 @@ export async function runAgent(message: string, url: string): Promise<void> {
     const timeout = setTimeout(() => {
       ws.close();
       reject(new Error(`Could not connect to ${url}`));
-    }, 10000);
+    }, 60000);
 
     ws.once('open', () => {
-      // 'chat' method is added in Phase 2. This sends the request and handles a "not found" response gracefully.
       ws.send(JSON.stringify({ id: '1', method: 'chat', params: { message } }));
     });
 
     ws.on('message', (raw) => {
       try {
         const msg = JSON.parse(raw.toString());
-        if (msg.event) return; // skip server-push events
+
+        // Print streaming agent blocks as they arrive
+        if (msg.event === 'agent:block') {
+          const block = msg.data;
+          if (block.type === 'text') {
+            process.stdout.write(block.content + '\n');
+          } else if (block.type === 'tool-call') {
+            process.stdout.write(`[tool] ${block.name}(${JSON.stringify(block.params)})\n`);
+          } else if (block.type === 'error') {
+            process.stderr.write(`[error] ${block.message}\n`);
+          } else if (block.type === 'done') {
+            process.stdout.write(`[done] ${block.stepsExecuted} step(s) via ${block.model}\n`);
+          }
+          return;
+        }
+
+        // Final RPC response
         clearTimeout(timeout);
         if (msg.error) {
-          if (msg.error.code === -32601) {
-            console.error('Agent chat is not yet available (requires Phase 2). Use `openclaw status` to verify the gateway is running.');
-          } else {
-            console.error('Error:', msg.error.message);
-          }
-        } else {
-          console.log(typeof msg.result === 'string' ? msg.result : JSON.stringify(msg.result, null, 2));
+          console.error('Error:', msg.error.message);
         }
         ws.close();
         resolve();
@@ -40,3 +49,4 @@ export async function runAgent(message: string, url: string): Promise<void> {
     });
   });
 }
+
