@@ -5,14 +5,27 @@ import { app } from '../server/server.js';
 import { config } from '../config/config.js';
 import { runtimeState } from './runtime-state.js';
 import { dispatch } from './server-methods.js';
+import { checkWsHandshakeRate } from './rate-limiter.js';
 import { logger } from '../logging/logger.js';
 import type { RpcRequest } from '../types/gateway.js';
+import type { IncomingMessage } from 'http';
 
 let httpServer: HttpServer | null = null;
 let wss: WebSocketServer | null = null;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
-function handleConnection(ws: WebSocket): void {
+function handleConnection(ws: WebSocket, req: IncomingMessage): void {
+  const origin =
+    (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim()
+    ?? req.socket.remoteAddress
+    ?? 'unknown';
+
+  const rateCheck = checkWsHandshakeRate(origin);
+  if (!rateCheck.allowed) {
+    ws.close(1008, rateCheck.reason ?? 'Rate limit exceeded');
+    return;
+  }
+
   const sessionId = uuidv4();
   runtimeState.addClient({ id: sessionId, ws, connectedAt: new Date(), lastSeen: new Date() });
 

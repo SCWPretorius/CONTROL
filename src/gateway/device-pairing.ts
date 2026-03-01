@@ -1,5 +1,10 @@
 import { randomBytes, createHmac } from 'crypto';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { resolve } from 'path';
+import { config } from '../config/config.js';
 import { logger } from '../logging/logger.js';
+
+const DEVICES_FILE = resolve(config.dataDir, 'devices.json');
 
 interface Device {
   id: string;
@@ -17,6 +22,34 @@ interface Challenge {
 class DevicePairingService {
   private devices = new Map<string, Device>();
   private challenges = new Map<string, Challenge>();
+
+  constructor() {
+    this.loadFromDisk();
+  }
+
+  private loadFromDisk(): void {
+    try {
+      if (existsSync(DEVICES_FILE)) {
+        const raw = readFileSync(DEVICES_FILE, 'utf8');
+        const entries = JSON.parse(raw) as Array<[string, Device]>;
+        for (const [id, device] of entries) {
+          this.devices.set(id, { ...device, registeredAt: new Date(device.registeredAt) });
+        }
+        logger.debug({ count: this.devices.size }, '[PAIRING] Loaded devices from disk');
+      }
+    } catch (err) {
+      logger.warn({ err }, '[PAIRING] Failed to load devices from disk — starting fresh');
+    }
+  }
+
+  private saveToDisk(): void {
+    try {
+      mkdirSync(config.dataDir, { recursive: true });
+      writeFileSync(DEVICES_FILE, JSON.stringify(Array.from(this.devices.entries())), 'utf8');
+    } catch (err) {
+      logger.error({ err }, '[PAIRING] Failed to save devices to disk');
+    }
+  }
 
   generateChallenge(deviceId: string): string {
     const nonce = randomBytes(32).toString('hex');
@@ -48,6 +81,7 @@ class DevicePairingService {
       registeredAt: new Date(),
       label,
     });
+    this.saveToDisk();
     logger.info({ deviceId, label }, '[PAIRING] Device approved');
   }
 

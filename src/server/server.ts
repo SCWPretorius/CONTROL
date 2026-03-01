@@ -14,6 +14,7 @@ import { logger } from '../logging/logger.js';
 import { approvalRouter } from './approvalRoutes.js';
 import queueRouter from './queueRoutes.js';
 import { routeEvent } from '../channels/router.js';
+import { verifyMediaToken } from '../media/token.js';
 
 const app = express();
 
@@ -121,6 +122,21 @@ app.get('/auth/google/status', (_req: Request, res: Response) => {
 app.use('/api/approval', approvalRouter);
 
 app.use('/api', queueRouter);
+
+app.get('/media/:token', (req: Request, res: Response) => {
+  const rawToken = req.params['token'];
+  const token = Array.isArray(rawToken) ? rawToken[0] : rawToken;
+  if (!token) {
+    res.status(400).json({ error: 'Missing token' });
+    return;
+  }
+  const result = verifyMediaToken(token);
+  if (!result.valid) {
+    res.status(401).json({ error: result.reason ?? 'Invalid or expired token' });
+    return;
+  }
+  res.json({ mediaPath: result.mediaPath });
+});
 
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   logger.error({ err }, '[SERVER] Unhandled error');

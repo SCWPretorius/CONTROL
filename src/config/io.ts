@@ -17,5 +17,9 @@ export function validateConfig(): void {
     logger.warn('[CONFIG] ENCRYPTION_KEY not set — encrypted secrets will not work');
   }
 
+  // Freeze the top-level config object so mutations are caught at runtime.
+  // TypeScript already enforces readonly types; this catches JS-layer mutations.
+  Object.freeze(config);
+
   logger.info('[CONFIG] Startup validation complete');
 }

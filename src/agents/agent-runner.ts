@@ -4,6 +4,7 @@ import { executeDecision } from '../executor/skillExecutor.js';
 import { retrieveContexts } from '../memory/contextRetriever.js';
 import { skillRegistry } from '../skills/skillRegistry.js';
 import { evaluateSourcePolicy, evaluateToolPolicy } from './policy-evaluator.js';
+import { recordUsage } from '../permissions/rbac.js';
 import { logger } from '../logging/logger.js';
 import type { AgentRunOptions, AgentBlock } from './types.js';
 import type { NormalizedEvent } from '../types/index.js';
@@ -139,6 +140,7 @@ export async function runAgent(
         const text = String(decision.params.text ?? '');
         onBlock({ type: 'tool-call', callId, name: decision.skill, params: decision.params });
         onBlock({ type: 'tool-result', callId, name: decision.skill, result: { sent: true, text }, success: true });
+        recordUsage(decision.skill, event);
         if (text) onBlock({ type: 'text', content: text });
         break;
       }
@@ -160,6 +162,8 @@ export async function runAgent(
         onBlock({ type: 'error', message: result.error ?? `${decision.skill} failed` });
         break;
       }
+
+      recordUsage(decision.skill, event);
 
       if (TERMINAL_SKILLS.has(decision.skill)) {
         const text = formatSkillResult(decision.skill, result.result);

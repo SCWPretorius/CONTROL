@@ -1,4 +1,4 @@
-import { resolve } from 'path';
+import { resolve, sep } from 'path';
 import { checkPermission } from '../permissions/rbac.js';
 import type { NormalizedEvent } from '../types/index.js';
 
@@ -18,7 +18,7 @@ export function evaluateToolPolicy(toolName: string, event: NormalizedEvent): Po
 export function evaluateWorkspaceBoundary(filePath: string): PolicyResult {
   const workspaceRoot = resolve(process.cwd());
   const resolvedPath = resolve(filePath);
-  if (!resolvedPath.startsWith(workspaceRoot + '/') && resolvedPath !== workspaceRoot) {
+  if (!resolvedPath.startsWith(workspaceRoot + sep) && resolvedPath !== workspaceRoot) {
     return { allowed: false, reason: `Path escapes workspace root: ${resolvedPath}` };
   }
   return { allowed: true };
