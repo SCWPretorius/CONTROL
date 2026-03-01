@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync, existsSync } from 'fs';
 import { resolve, join, sep } from 'path';
+import { pathToFileURL } from 'url';
 import { ManifestSchema } from './manifest.js';
 import type { PluginModule, LoadedPlugin } from './types.js';
 import { pluginRegistry } from './registry.js';
@@ -63,8 +64,10 @@ export async function loadPlugins(pluginsDir: string = DEFAULT_PLUGINS_DIR): Pro
         continue;
       }
 
-      // Dynamic import with cache-bust to support hot-reload in dev
-      const mod = await import(`${entryPath}?v=${Date.now()}`);
+      // Dynamic import with cache-bust to support hot-reload in dev.
+      // pathToFileURL() is required on Windows — bare C:\... paths are rejected by the ESM loader.
+      const entryUrl = `${pathToFileURL(entryPath).href}?v=${Date.now()}`;
+      const mod = await import(entryUrl);
       const pluginModule: PluginModule = (mod.plugin ?? mod.default ?? mod) as PluginModule;
 
       // Register tools with the agent tool registry
