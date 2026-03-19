@@ -1,0 +1,61 @@
+# dependencies (bun install)
+node_modules
+
+# output
+out
+dist
+*.tgz
+
+# code coverage
+coverage
+*.lcov
+
+# logs
+logs
+_.log
+report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
+
+# dotenv environment variable files
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+
+# caches
+.eslintcache
+.cache
+*.tsbuildinfo
+
+# IntelliJ based IDEs
+.idea
+
+# Finder (MacOS) folder config
+.DS_Store
+
+# sessions and memory (runtime data)
+sessions/*
+!sessions/.gitkeep
+memory/*
+!memory/.gitkeep
+brain/permanent-memory.md
+
+# channel auth state
+.wa-auth/
+
+# cached skill files
+skills/*
+!skills/.gitkeep
+
+# downloaded media from channels
+media/
+
+.docs
+
+# Go build artifacts
+assistant.exe
+*.test
+*.out
+
+# assistant runtime state
+var/
