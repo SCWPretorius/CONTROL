@@ -124,6 +124,9 @@ func TestLoadFromLookupLoadsToolingSettings(t *testing.T) {
 	if !cfg.Tools.Google.RuntimeEnabled() {
 		t.Fatal("Google tool runtime should be enabled when OAuth config and access token are set")
 	}
+	if cfg.Tools.MCP.Enabled() {
+		t.Fatal("MCP should be disabled by default")
+	}
 
 	if got, want := cfg.Tools.Google.OAuth.Scopes, []string{"scope-a", "scope-b"}; !slices.Equal(got, want) {
 		t.Fatalf("Scopes = %#v, want %#v", got, want)
@@ -139,6 +142,67 @@ func TestLoadFromLookupLoadsToolingSettings(t *testing.T) {
 
 	if got, want := cfg.Tools.Runtime.MaxCommandOutputBytes, 2048; got != want {
 		t.Fatalf("MaxCommandOutputBytes = %d, want %d", got, want)
+	}
+}
+
+func TestLoadFromLookupLoadsAndNormalizesMCPServers(t *testing.T) {
+	t.Parallel()
+
+	cwd := t.TempDir()
+	cfg, err := LoadFromLookup(
+		envLookup(map[string]string{
+			"TELEGRAM_BOT_TOKEN":       "token",
+			"TELEGRAM_ALLOWED_USER_ID": "1",
+			"TELEGRAM_ALLOWED_CHAT_ID": "2",
+			"COPILOT_CLI_PATH":         "copilot",
+			"ASSISTANT_TOOL_MCP_SERVERS_JSON": `{
+				"filesystem": {
+					"type": "stdio",
+					"command": "npx",
+					"args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+					"tools": ["*"],
+					"env": {"MODE": " readonly "},
+					"cwd": ".\\tools"
+				},
+				"tickets": {
+					"type": "http",
+					"url": "https://example.com/mcp",
+					"tools": ["list_tickets"],
+					"headers": {"Authorization": " Bearer token "},
+					"timeout": 15
+				}
+			}`,
+		}),
+		func() (string, error) { return cwd, nil },
+	)
+	if err != nil {
+		t.Fatalf("LoadFromLookup() error = %v", err)
+	}
+
+	if !cfg.Tools.MCP.Enabled() {
+		t.Fatal("MCP should be enabled when servers are configured")
+	}
+
+	filesystem := cfg.Tools.MCP.Servers["filesystem"]
+	if filesystem.Type != "stdio" {
+		t.Fatalf("filesystem.Type = %q, want stdio", filesystem.Type)
+	}
+	if got, want := filesystem.Cwd, filepath.Join(cwd, "tools"); got != want {
+		t.Fatalf("filesystem.Cwd = %q, want %q", got, want)
+	}
+	if got, want := filesystem.Env["MODE"], "readonly"; got != want {
+		t.Fatalf("filesystem.Env[MODE] = %q, want %q", got, want)
+	}
+
+	tickets := cfg.Tools.MCP.Servers["tickets"]
+	if tickets.Type != "http" {
+		t.Fatalf("tickets.Type = %q, want http", tickets.Type)
+	}
+	if got, want := tickets.Headers["Authorization"], "Bearer token"; got != want {
+		t.Fatalf("tickets.Headers[Authorization] = %q, want %q", got, want)
+	}
+	if got, want := tickets.Timeout, 15; got != want {
+		t.Fatalf("tickets.Timeout = %d, want %d", got, want)
 	}
 }
 
@@ -249,6 +313,44 @@ func TestLoadFromLookupRejectsUnsafeShellAutoApproveEntry(t *testing.T) {
 			)
 			if err == nil {
 				t.Fatalf("LoadFromLookup() error = nil, want unsafe shell allowlist error for %q", entry)
+			}
+		})
+	}
+}
+
+func TestLoadFromLookupRejectsInvalidMCPConfig(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]string{
+		"invalid json":        `{`,
+		"missing tools":       `{"bad":{"type":"stdio","command":"npx"}}`,
+		"missing local cmd":   `{"bad":{"type":"stdio","tools":["*"]}}`,
+		"local with url":      `{"bad":{"type":"local","command":"npx","url":"https://example.com","tools":["*"]}}`,
+		"missing remote url":  `{"bad":{"type":"http","tools":["*"]}}`,
+		"remote local fields": `{"bad":{"type":"sse","url":"https://example.com/sse","command":"npx","tools":["*"]}}`,
+		"unsupported type":    `{"bad":{"type":"socket","tools":["*"]}}`,
+		"bad url":             `{"bad":{"type":"http","url":"not-a-url","tools":["*"]}}`,
+		"bad url scheme":      `{"bad":{"type":"http","url":"ftp://example.com/mcp","tools":["*"]}}`,
+		"unknown field":       `{"bad":{"type":"http","url":"https://example.com/mcp","tools":["*"],"unknown":true}}`,
+	}
+
+	for name, raw := range cases {
+		name, raw := name, raw
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := LoadFromLookup(
+				envLookup(map[string]string{
+					"TELEGRAM_BOT_TOKEN":              "token",
+					"TELEGRAM_ALLOWED_USER_ID":        "1",
+					"TELEGRAM_ALLOWED_CHAT_ID":        "2",
+					"COPILOT_CLI_PATH":                "copilot",
+					"ASSISTANT_TOOL_MCP_SERVERS_JSON": raw,
+				}),
+				func() (string, error) { return t.TempDir(), nil },
+			)
+			if err == nil {
+				t.Fatalf("LoadFromLookup() error = nil, want MCP validation error for %q", name)
 			}
 		})
 	}

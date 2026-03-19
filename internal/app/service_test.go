@@ -166,6 +166,16 @@ func TestRuntimeConfigSessionToolsCarryGoogleWorkspaceToolsIntoSDKConfigs(t *tes
 				AllowedWorkspaceRoots:  []string{root},
 				AssistantWritableRoots: []string{root},
 			},
+			MCP: config.MCPToolConfig{
+				Servers: map[string]config.MCPServerConfig{
+					"filesystem": {
+						Type:    "stdio",
+						Command: "npx",
+						Args:    []string{"-y", "@modelcontextprotocol/server-filesystem"},
+						Tools:   []string{"*"},
+					},
+				},
+			},
 			Runtime: config.ToolRuntimeConfig{
 				HTTPTimeout:           time.Second,
 				ShellCommandTimeout:   time.Second,
@@ -188,6 +198,12 @@ func TestRuntimeConfigSessionToolsCarryGoogleWorkspaceToolsIntoSDKConfigs(t *tes
 	assertToolNames(t, runtimeCfg.Session.Tools, expectedRuntimeToolNames())
 	assertToolNames(t, createCfg.Tools, expectedRuntimeToolNames())
 	assertToolNames(t, resumeCfg.Tools, expectedRuntimeToolNames())
+	if got := createCfg.MCPServers["filesystem"]["command"]; got != "npx" {
+		t.Fatalf("CreateConfig MCP filesystem command = %#v, want %q", got, "npx")
+	}
+	if got := resumeCfg.MCPServers["filesystem"]["command"]; got != "npx" {
+		t.Fatalf("ResumeConfig MCP filesystem command = %#v, want %q", got, "npx")
+	}
 }
 
 func TestPermissionRequestResultDeniesReadOnlyGoogleToolOutsideTelegram(t *testing.T) {
@@ -245,6 +261,22 @@ func TestPermissionRequestResultApprovesKnownReadOnlyGoogleToolForTelegramWhenRe
 
 	if result.Kind != sdk.PermissionRequestResultKindApproved {
 		t.Fatalf("result.Kind = %q, want %q", result.Kind, sdk.PermissionRequestResultKindApproved)
+	}
+}
+
+func TestPermissionRequestResultDeniesMCPToolForTelegram(t *testing.T) {
+	t.Parallel()
+
+	result := permissionRequestResult(copilot.PermissionEvent{
+		ExternalKey: "chat_id=77|transport=telegram|user_id=88",
+		SessionID:   "session-123",
+		Request: sdk.PermissionRequest{
+			Kind: sdk.MCP,
+		},
+	})
+
+	if result.Kind != sdk.PermissionRequestResultKindDeniedCouldNotRequestFromUser {
+		t.Fatalf("result.Kind = %q, want %q", result.Kind, sdk.PermissionRequestResultKindDeniedCouldNotRequestFromUser)
 	}
 }
 

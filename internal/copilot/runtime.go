@@ -69,6 +69,7 @@ type SessionOptions struct {
 	ConfigDir       string
 	ClientName      string
 	Tools           []sdk.Tool
+	MCPServers      map[string]sdk.MCPServerConfig
 }
 
 func (o SessionOptions) CreateConfig(sessionID string, hooks RuntimeHooks, externalKey string) *sdk.SessionConfig {
@@ -79,6 +80,7 @@ func (o SessionOptions) CreateConfig(sessionID string, hooks RuntimeHooks, exter
 		ReasoningEffort:     strings.TrimSpace(o.ReasoningEffort),
 		ConfigDir:           strings.TrimSpace(o.ConfigDir),
 		Tools:               cloneTools(o.Tools),
+		MCPServers:          cloneMCPServers(o.MCPServers),
 		OnPermissionRequest: hooks.wrapPermissionHandler(externalKey),
 		OnUserInputRequest:  hooks.OnUserInputRequest,
 		Hooks:               hooks.wrapSessionHooks(externalKey),
@@ -94,6 +96,7 @@ func (o SessionOptions) ResumeConfig(hooks RuntimeHooks, externalKey string) *sd
 		ReasoningEffort:     strings.TrimSpace(o.ReasoningEffort),
 		ConfigDir:           strings.TrimSpace(o.ConfigDir),
 		Tools:               cloneTools(o.Tools),
+		MCPServers:          cloneMCPServers(o.MCPServers),
 		OnPermissionRequest: hooks.wrapPermissionHandler(externalKey),
 		OnUserInputRequest:  hooks.OnUserInputRequest,
 		Hooks:               hooks.wrapSessionHooks(externalKey),
@@ -126,6 +129,7 @@ func ConfigFromFoundation(cfg config.Config) RuntimeConfig {
 			WorkingDir:      cfg.Session.WorkingDir,
 			ConfigDir:       cfg.Session.ConfigDir,
 			ClientName:      defaultClientName,
+			MCPServers:      configMCPServersToSDK(cfg.Tools.MCP.Servers),
 		},
 		LogLevel: defaultLogLevel,
 	}
@@ -867,6 +871,86 @@ func cloneTools(tools []sdk.Tool) []sdk.Tool {
 	cloned := make([]sdk.Tool, len(tools))
 	copy(cloned, tools)
 	return cloned
+}
+
+func cloneMCPServers(servers map[string]sdk.MCPServerConfig) map[string]sdk.MCPServerConfig {
+	if len(servers) == 0 {
+		return nil
+	}
+
+	cloned := make(map[string]sdk.MCPServerConfig, len(servers))
+	for name, server := range servers {
+		serverClone := make(sdk.MCPServerConfig, len(server))
+		for key, value := range server {
+			serverClone[key] = cloneMCPValue(value)
+		}
+		cloned[name] = serverClone
+	}
+
+	return cloned
+}
+
+func cloneMCPValue(value any) any {
+	switch typed := value.(type) {
+	case []string:
+		return append([]string(nil), typed...)
+	case map[string]string:
+		cloned := make(map[string]string, len(typed))
+		for key, entry := range typed {
+			cloned[key] = entry
+		}
+		return cloned
+	default:
+		return typed
+	}
+}
+
+func configMCPServersToSDK(servers map[string]config.MCPServerConfig) map[string]sdk.MCPServerConfig {
+	if len(servers) == 0 {
+		return nil
+	}
+
+	converted := make(map[string]sdk.MCPServerConfig, len(servers))
+	for name, server := range servers {
+		entry := sdk.MCPServerConfig{
+			"type":  server.Type,
+			"tools": append([]string(nil), server.Tools...),
+		}
+		if server.Timeout > 0 {
+			entry["timeout"] = server.Timeout
+		}
+
+		switch server.Type {
+		case "local", "stdio":
+			entry["command"] = server.Command
+			if len(server.Args) > 0 {
+				entry["args"] = append([]string(nil), server.Args...)
+			}
+			if len(server.Env) > 0 {
+				env := make(map[string]string, len(server.Env))
+				for key, value := range server.Env {
+					env[key] = value
+				}
+				entry["env"] = env
+			}
+			if strings.TrimSpace(server.Cwd) != "" {
+				entry["cwd"] = server.Cwd
+			}
+		case "http", "sse":
+			entry["url"] = server.URL
+			if len(server.Headers) > 0 {
+				headers := make(map[string]string, len(server.Headers))
+				for key, value := range server.Headers {
+					headers[key] = value
+				}
+				entry["headers"] = headers
+			}
+		}
+
+		converted[name] = entry
+	}
+
+	return converted
 }
 
 func defaultIfBlank(value, fallback string) string {

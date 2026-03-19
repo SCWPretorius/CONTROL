@@ -234,6 +234,14 @@ func TestSessionOptionsCreateConfigMapsFoundationValues(t *testing.T) {
 		WorkingDir:      `C:\repo`,
 		ConfigDir:       `C:\runtime\copilot`,
 		ClientName:      "control-tests",
+		MCPServers: map[string]sdk.MCPServerConfig{
+			"filesystem": {
+				"type":    "stdio",
+				"command": "npx",
+				"args":    []string{"-y", "@modelcontextprotocol/server-filesystem"},
+				"tools":   []string{"*"},
+			},
+		},
 	}
 
 	cfg := options.CreateConfig("session-123", RuntimeHooks{}, "chat_id=1")
@@ -257,6 +265,9 @@ func TestSessionOptionsCreateConfigMapsFoundationValues(t *testing.T) {
 	}
 	if len(cfg.Tools) != 0 {
 		t.Fatalf("Tools length = %d, want %d", len(cfg.Tools), 0)
+	}
+	if got := cfg.MCPServers["filesystem"]["command"]; got != "npx" {
+		t.Fatalf("MCPServers filesystem command = %#v, want %q", got, "npx")
 	}
 	if cfg.OnPermissionRequest == nil {
 		t.Fatal("OnPermissionRequest = nil, want wrapper")
@@ -299,6 +310,13 @@ func TestSessionOptionsCreateAndResumeConfigIncludeCustomTools(t *testing.T) {
 		ConfigDir:       `C:\runtime\copilot`,
 		ClientName:      "control-tests",
 		Tools:           []sdk.Tool{customTool, secondTool},
+		MCPServers: map[string]sdk.MCPServerConfig{
+			"tickets": {
+				"type":  "http",
+				"url":   "https://example.com/mcp",
+				"tools": []string{"list_tickets"},
+			},
+		},
 	}
 
 	createCfg := options.CreateConfig("session-123", RuntimeHooks{}, "chat_id=1")
@@ -308,6 +326,16 @@ func TestSessionOptionsCreateAndResumeConfigIncludeCustomTools(t *testing.T) {
 	}
 	if len(resumeCfg.Tools) != 2 || resumeCfg.Tools[0].Name != "echo_tool" || resumeCfg.Tools[1].Name != "status_tool" {
 		t.Fatalf("ResumeConfig tools = %#v", resumeCfg.Tools)
+	}
+	if got := createCfg.MCPServers["tickets"]["url"]; got != "https://example.com/mcp" {
+		t.Fatalf("CreateConfig MCP url = %#v", got)
+	}
+	if got := resumeCfg.MCPServers["tickets"]["url"]; got != "https://example.com/mcp" {
+		t.Fatalf("ResumeConfig MCP url = %#v", got)
+	}
+	createCfg.MCPServers["tickets"]["url"] = "https://mutated.example.com/mcp"
+	if got := options.MCPServers["tickets"]["url"]; got != "https://example.com/mcp" {
+		t.Fatalf("options MCP url mutated to %#v, want original value", got)
 	}
 	if &createCfg.Tools[0] == &options.Tools[0] || &resumeCfg.Tools[0] == &options.Tools[0] {
 		t.Fatal("session config tools should be cloned, not alias the source slice")
@@ -332,6 +360,18 @@ func TestConfigFromFoundationMapsExistingConfig(t *testing.T) {
 			WorkingDir:      `C:\repo`,
 			ConfigDir:       `C:\repo\var\runtime\copilot`,
 		},
+		Tools: config.ToolConfig{
+			MCP: config.MCPToolConfig{
+				Servers: map[string]config.MCPServerConfig{
+					"filesystem": {
+						Type:    "stdio",
+						Command: "npx",
+						Args:    []string{"-y", "@modelcontextprotocol/server-filesystem"},
+						Tools:   []string{"*"},
+					},
+				},
+			},
+		},
 	}
 
 	runtimeCfg := ConfigFromFoundation(cfg)
@@ -343,6 +383,9 @@ func TestConfigFromFoundationMapsExistingConfig(t *testing.T) {
 	}
 	if runtimeCfg.Session.Namespace != "telegram-personal-assistant" {
 		t.Fatalf("Session.Namespace = %q, want %q", runtimeCfg.Session.Namespace, "telegram-personal-assistant")
+	}
+	if got := runtimeCfg.Session.MCPServers["filesystem"]["command"]; got != "npx" {
+		t.Fatalf("Session.MCPServers filesystem command = %#v, want %q", got, "npx")
 	}
 	if runtimeCfg.LogLevel != defaultLogLevel {
 		t.Fatalf("LogLevel = %q, want %q", runtimeCfg.LogLevel, defaultLogLevel)

@@ -1,8 +1,11 @@
 package config
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -72,6 +75,7 @@ type SessionConfig struct {
 
 type ToolConfig struct {
 	Google     GoogleToolConfig
+	MCP        MCPToolConfig
 	Privileged PrivilegedToolConfig
 	Runtime    ToolRuntimeConfig
 }
@@ -79,6 +83,22 @@ type ToolConfig struct {
 type GoogleToolConfig struct {
 	OAuth       GoogleOAuthConfig
 	AccessToken string
+}
+
+type MCPToolConfig struct {
+	Servers map[string]MCPServerConfig
+}
+
+type MCPServerConfig struct {
+	Type    string
+	Tools   []string
+	Timeout int
+	Command string
+	Args    []string
+	Env     map[string]string
+	Cwd     string
+	URL     string
+	Headers map[string]string
 }
 
 type GoogleOAuthConfig struct {
@@ -115,6 +135,10 @@ func (c GoogleToolConfig) AccessTokenConfigured() bool {
 
 func (c GoogleToolConfig) RuntimeEnabled() bool {
 	return c.Enabled() && c.AccessTokenConfigured()
+}
+
+func (c MCPToolConfig) Enabled() bool {
+	return len(c.Servers) > 0
 }
 
 type PrivilegedToolConfig struct {
@@ -169,6 +193,7 @@ func LoadFromLookup(lookup func(string) (string, bool), getwd func() (string, er
 				},
 				AccessToken: strings.TrimSpace(optionalEnv(lookup, "GOOGLE_OAUTH_ACCESS_TOKEN", "")),
 			},
+			MCP:     MCPToolConfig{},
 			Runtime: ToolRuntimeConfig{},
 		},
 	}
@@ -225,6 +250,14 @@ func LoadFromLookup(lookup func(string) (string, bool), getwd func() (string, er
 	}
 	if len(cfg.Tools.Google.OAuth.Scopes) == 0 {
 		return Config{}, errors.New("GOOGLE_OAUTH_SCOPES must include at least one scope")
+	}
+
+	cfg.Tools.MCP.Servers, err = optionalMCPServersEnv(lookup, "ASSISTANT_TOOL_MCP_SERVERS_JSON")
+	if err != nil {
+		return Config{}, err
+	}
+	if err := validateAndNormalizeMCPServers(cwd, cfg.Tools.MCP.Servers); err != nil {
+		return Config{}, err
 	}
 
 	cfg.Tools.Privileged.AllowedWorkspaceRoots, err = normalizePathList(cwd,
@@ -416,6 +449,36 @@ func optionalPathListEnv(lookup func(string) (string, bool), key string, fallbac
 	return values
 }
 
+func optionalMCPServersEnv(lookup func(string) (string, bool), key string) (map[string]MCPServerConfig, error) {
+	raw, ok := lookup(key)
+	if !ok {
+		return nil, nil
+	}
+
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+
+	var rawServers map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &rawServers); err != nil {
+		return nil, fmt.Errorf("%s must be valid JSON: %w", key, err)
+	}
+
+	servers := make(map[string]MCPServerConfig, len(rawServers))
+	for name, payload := range rawServers {
+		var server MCPServerConfig
+		decoder := json.NewDecoder(bytes.NewReader(payload))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&server); err != nil {
+			return nil, fmt.Errorf("%s server %q must match the supported MCP schema: %w", key, name, err)
+		}
+		servers[name] = server
+	}
+
+	return servers, nil
+}
+
 func normalizePath(baseDir, path string) (string, error) {
 	if filepath.IsAbs(path) {
 		return filepath.Clean(path), nil
@@ -475,4 +538,131 @@ func validateShellAutoApproveEntry(entry string) error {
 	}
 
 	return nil
+}
+
+func validateAndNormalizeMCPServers(baseDir string, servers map[string]MCPServerConfig) error {
+	for name, server := range servers {
+		trimmedName := strings.TrimSpace(name)
+		if trimmedName == "" {
+			return errors.New("ASSISTANT_TOOL_MCP_SERVERS_JSON server names must not be empty")
+		}
+		if trimmedName != name {
+			return fmt.Errorf("ASSISTANT_TOOL_MCP_SERVERS_JSON server name %q must not contain leading or trailing whitespace", name)
+		}
+		if err := validateAndNormalizeMCPServer(baseDir, trimmedName, &server); err != nil {
+			return err
+		}
+		servers[name] = server
+	}
+
+	return nil
+}
+
+func validateAndNormalizeMCPServer(baseDir, name string, server *MCPServerConfig) error {
+	server.Type = strings.TrimSpace(strings.ToLower(server.Type))
+	server.Tools = cleanNonEmptyStrings(server.Tools)
+	server.Command = strings.TrimSpace(server.Command)
+	server.Args = cleanStrings(server.Args)
+	server.URL = strings.TrimSpace(server.URL)
+
+	if len(server.Tools) == 0 {
+		return fmt.Errorf("ASSISTANT_TOOL_MCP_SERVERS_JSON server %q must include at least one tool selector", name)
+	}
+	if server.Timeout < 0 {
+		return fmt.Errorf("ASSISTANT_TOOL_MCP_SERVERS_JSON server %q timeout must not be negative", name)
+	}
+
+	switch server.Type {
+	case "local", "stdio":
+		if server.Command == "" {
+			return fmt.Errorf("ASSISTANT_TOOL_MCP_SERVERS_JSON server %q requires command for local/stdio MCP", name)
+		}
+		if server.URL != "" {
+			return fmt.Errorf("ASSISTANT_TOOL_MCP_SERVERS_JSON server %q must not set url for local/stdio MCP", name)
+		}
+		if len(server.Headers) > 0 {
+			return fmt.Errorf("ASSISTANT_TOOL_MCP_SERVERS_JSON server %q must not set headers for local/stdio MCP", name)
+		}
+		if server.Cwd = strings.TrimSpace(server.Cwd); server.Cwd != "" {
+			cwd, err := normalizePath(baseDir, server.Cwd)
+			if err != nil {
+				return fmt.Errorf("ASSISTANT_TOOL_MCP_SERVERS_JSON server %q cwd: %w", name, err)
+			}
+			server.Cwd = cwd
+		}
+		var err error
+		server.Env, err = normalizeStringMap(server.Env)
+		if err != nil {
+			return fmt.Errorf("ASSISTANT_TOOL_MCP_SERVERS_JSON server %q env: %w", name, err)
+		}
+	case "http", "sse":
+		if server.URL == "" {
+			return fmt.Errorf("ASSISTANT_TOOL_MCP_SERVERS_JSON server %q requires url for remote MCP", name)
+		}
+		if server.Command != "" || len(server.Args) > 0 || len(server.Env) > 0 || strings.TrimSpace(server.Cwd) != "" {
+			return fmt.Errorf("ASSISTANT_TOOL_MCP_SERVERS_JSON server %q must not set local-only fields for remote MCP", name)
+		}
+		parsedURL, err := url.Parse(server.URL)
+		if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
+			return fmt.Errorf("ASSISTANT_TOOL_MCP_SERVERS_JSON server %q url must be an absolute URL", name)
+		}
+		if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+			return fmt.Errorf("ASSISTANT_TOOL_MCP_SERVERS_JSON server %q url scheme must be http or https", name)
+		}
+		server.Headers, err = normalizeStringMap(server.Headers)
+		if err != nil {
+			return fmt.Errorf("ASSISTANT_TOOL_MCP_SERVERS_JSON server %q headers: %w", name, err)
+		}
+	default:
+		return fmt.Errorf("ASSISTANT_TOOL_MCP_SERVERS_JSON server %q has unsupported type %q", name, server.Type)
+	}
+
+	return nil
+}
+
+func cleanStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+
+	cleaned := make([]string, 0, len(values))
+	for _, value := range values {
+		cleaned = append(cleaned, strings.TrimSpace(value))
+	}
+
+	return cleaned
+}
+
+func cleanNonEmptyStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+
+	cleaned := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		cleaned = append(cleaned, value)
+	}
+
+	return cleaned
+}
+
+func normalizeStringMap(values map[string]string) (map[string]string, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+
+	normalized := make(map[string]string, len(values))
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return nil, errors.New("keys must not be empty")
+		}
+		normalized[key] = strings.TrimSpace(value)
+	}
+
+	return normalized, nil
 }

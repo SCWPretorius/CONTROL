@@ -105,7 +105,7 @@ func Run(ctx context.Context, cfg config.Config, logger *log.Logger) error {
 	}
 
 	logger.Printf(
-		"assistant ready transport=%s model=%s namespace=%s allowed_user=%d allowed_chat=%d resume_sessions=%t runtime_dir=%s storage_dir=%s privileged_tools=%t google_tools=%t custom_tool_count=%d",
+		"assistant ready transport=%s model=%s namespace=%s allowed_user=%d allowed_chat=%d resume_sessions=%t runtime_dir=%s storage_dir=%s privileged_tools=%t google_tools=%t mcp_server_count=%d custom_tool_count=%d",
 		cfg.Copilot.Transport(),
 		cfg.Session.Model,
 		cfg.Session.Namespace,
@@ -116,6 +116,7 @@ func Run(ctx context.Context, cfg config.Config, logger *log.Logger) error {
 		cfg.Paths.StorageDir,
 		toolset.PrivilegedEnabled,
 		toolset.GoogleEnabled,
+		len(cfg.Tools.MCP.Servers),
 		len(toolset.Tools),
 	)
 
