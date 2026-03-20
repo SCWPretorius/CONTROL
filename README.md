@@ -76,6 +76,13 @@ MCP notes:
 - MCP servers are loaded only at startup and attached to every created/resumed Copilot session.
 - CONTROL does not allow Telegram users to add or mutate MCP servers at runtime.
 - MCP permission requests remain deny-by-default unless a future policy explicitly approves them.
+- Keep MCP secrets out of git history. Put bearer tokens in local-only environment values and use placeholders in committed examples.
+
+Home Assistant example:
+
+```powershell
+$env:ASSISTANT_TOOL_MCP_SERVERS_JSON = '{"Home Assistant":{"type":"stdio","command":"mcp-proxy","args":["--transport=streamablehttp","--stateless","http://localhost:8123/api/mcp"],"env":{"API_ACCESS_TOKEN":"replace-with-your-home-assistant-token"},"tools":["*"]}}'
+```
 
 ## Local setup
 
