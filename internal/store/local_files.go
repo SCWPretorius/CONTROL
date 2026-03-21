@@ -21,6 +21,8 @@ const (
 	auditDirName           = "audit"
 	monitorDirName         = "monitors"
 	privilegedToolLogName  = "privileged-tool-events.ndjson"
+	monitorEventLogName    = "monitor-events.ndjson"
+	monitorCorrelationName = "monitor-correlations.ndjson"
 )
 
 // LocalFileStore persists app-owned state as local JSON and NDJSON files.
@@ -38,6 +40,8 @@ var (
 	_ ChatSessionResetter      = (*LocalFileStore)(nil)
 	_ PrivilegedToolEventStore = (*LocalFileStore)(nil)
 	_ MonitorCheckpointStore   = (*LocalFileStore)(nil)
+	_ MonitorEventStore        = (*LocalFileStore)(nil)
+	_ MonitorCorrelationStore  = (*LocalFileStore)(nil)
 )
 
 // NewLocalFileStore creates a file-backed store rooted at the configured storage dir.
@@ -207,40 +211,16 @@ func (s *LocalFileStore) Append(ctx context.Context, event PrivilegedToolEvent) 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if strings.TrimSpace(event.ToolName) == "" {
-		return errors.New("privileged tool event tool name is required")
-	}
-	if strings.TrimSpace(event.EventType) == "" {
-		return errors.New("privileged tool event type is required")
+	if err := normalizePrivilegedToolEvent(&event); err != nil {
+		return err
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := time.Now().UTC()
-	if event.ID == "" {
-		event.ID = fmt.Sprintf("%d", now.UnixNano())
+	if err := appendNDJSONRecord(s.privilegedToolLogPath(), "privileged tool event", event); err != nil {
+		return err
 	}
-	if event.OccurredAt.IsZero() {
-		event.OccurredAt = now
-	}
-
-	payload, err := json.Marshal(event)
-	if err != nil {
-		return fmt.Errorf("encode privileged tool event: %w", err)
-	}
-	payload = append(payload, '\n')
-
-	file, err := os.OpenFile(s.privilegedToolLogPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		return fmt.Errorf("open privileged tool event log: %w", err)
-	}
-	defer file.Close()
-
-	if _, err := file.Write(payload); err != nil {
-		return fmt.Errorf("append privileged tool event: %w", err)
-	}
-
 	return ctx.Err()
 }
 
@@ -253,39 +233,67 @@ func (s *LocalFileStore) Load(ctx context.Context) ([]PrivilegedToolEvent, error
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	path := s.privilegedToolLogPath()
-	file, err := os.Open(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("open privileged tool event log %q: %w", path, err)
-	}
-	defer file.Close()
+	return loadNDJSONRecords[PrivilegedToolEvent](ctx, s.privilegedToolLogPath(), "privileged tool event")
+}
 
-	scanner := bufio.NewScanner(file)
-	var events []PrivilegedToolEvent
-	for scanner.Scan() {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-
-		var event PrivilegedToolEvent
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			return nil, fmt.Errorf("decode privileged tool event: %w", err)
-		}
-		events = append(events, event)
+// AppendMonitorEvent stores a monitor event in append-only NDJSON form.
+func (s *LocalFileStore) AppendMonitorEvent(ctx context.Context, event MonitorEvent) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := normalizeMonitorEvent(&event); err != nil {
+		return err
 	}
 
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan privileged tool event log %q: %w", path, err)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := appendNDJSONRecord(s.monitorEventLogPath(), "monitor event", event); err != nil {
+		return err
+	}
+	return ctx.Err()
+}
+
+// LoadMonitorEvents loads every persisted monitor event from the append-only NDJSON log.
+func (s *LocalFileStore) LoadMonitorEvents(ctx context.Context) ([]MonitorEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
-	return events, nil
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return loadNDJSONRecords[MonitorEvent](ctx, s.monitorEventLogPath(), "monitor event")
+}
+
+// AppendMonitorCorrelation stores a monitor correlation in append-only NDJSON form.
+func (s *LocalFileStore) AppendMonitorCorrelation(ctx context.Context, correlation MonitorCorrelation) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := normalizeMonitorCorrelation(&correlation); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := appendNDJSONRecord(s.monitorCorrelationLogPath(), "monitor correlation", correlation); err != nil {
+		return err
+	}
+	return ctx.Err()
+}
+
+// LoadMonitorCorrelations loads every persisted monitor correlation from the append-only NDJSON log.
+func (s *LocalFileStore) LoadMonitorCorrelations(ctx context.Context) ([]MonitorCorrelation, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return loadNDJSONRecords[MonitorCorrelation](ctx, s.monitorCorrelationLogPath(), "monitor correlation")
 }
 
 // GetMonitorCheckpoint returns the persisted checkpoint for a monitor check, if one exists.
@@ -364,6 +372,14 @@ func (s *LocalFileStore) sessionPath(transport string, chatID int64) string {
 
 func (s *LocalFileStore) privilegedToolLogPath() string {
 	return filepath.Join(s.auditDir, privilegedToolLogName)
+}
+
+func (s *LocalFileStore) monitorEventLogPath() string {
+	return filepath.Join(s.auditDir, monitorEventLogName)
+}
+
+func (s *LocalFileStore) monitorCorrelationLogPath() string {
+	return filepath.Join(s.auditDir, monitorCorrelationName)
 }
 
 func (s *LocalFileStore) monitorCheckpointPath(checkID string) string {
@@ -523,6 +539,165 @@ func normalizeMonitorCheckpoint(checkpoint *MonitorCheckpoint) (string, error) {
 	}
 
 	return checkpoint.CheckID, nil
+}
+
+func normalizePrivilegedToolEvent(event *PrivilegedToolEvent) error {
+	if event == nil {
+		return errors.New("privileged tool event is required")
+	}
+
+	event.ID = strings.TrimSpace(event.ID)
+	event.SessionID = strings.TrimSpace(event.SessionID)
+	event.ToolName = strings.TrimSpace(event.ToolName)
+	event.EventType = strings.TrimSpace(event.EventType)
+	event.Outcome = strings.TrimSpace(event.Outcome)
+	event.Summary = strings.TrimSpace(event.Summary)
+
+	if event.ToolName == "" {
+		return errors.New("privileged tool event tool name is required")
+	}
+	if event.EventType == "" {
+		return errors.New("privileged tool event type is required")
+	}
+
+	now := time.Now().UTC()
+	if event.ID == "" {
+		event.ID = fmt.Sprintf("%d", now.UnixNano())
+	}
+	if event.OccurredAt.IsZero() {
+		event.OccurredAt = now
+	}
+	return nil
+}
+
+func normalizeMonitorEvent(event *MonitorEvent) error {
+	if event == nil {
+		return errors.New("monitor event is required")
+	}
+
+	event.ID = strings.TrimSpace(event.ID)
+	event.CheckID = strings.TrimSpace(event.CheckID)
+	event.IncidentID = strings.TrimSpace(event.IncidentID)
+	event.CorrelationID = strings.TrimSpace(event.CorrelationID)
+	event.SessionID = strings.TrimSpace(event.SessionID)
+	event.EventType = strings.TrimSpace(event.EventType)
+	event.Condition = strings.TrimSpace(event.Condition)
+	event.Fingerprint = strings.TrimSpace(event.Fingerprint)
+	event.Outcome = strings.TrimSpace(event.Outcome)
+	event.Summary = strings.TrimSpace(event.Summary)
+
+	if event.CheckID == "" {
+		return errors.New("monitor event check id is required")
+	}
+	if event.EventType == "" {
+		return errors.New("monitor event type is required")
+	}
+
+	now := time.Now().UTC()
+	if event.ID == "" {
+		event.ID = fmt.Sprintf("%d", now.UnixNano())
+	}
+	if event.OccurredAt.IsZero() {
+		event.OccurredAt = now
+	}
+	return nil
+}
+
+func normalizeMonitorCorrelation(correlation *MonitorCorrelation) error {
+	if correlation == nil {
+		return errors.New("monitor correlation is required")
+	}
+
+	correlation.ID = strings.TrimSpace(correlation.ID)
+	correlation.CheckID = strings.TrimSpace(correlation.CheckID)
+	correlation.IncidentID = strings.TrimSpace(correlation.IncidentID)
+	correlation.CorrelationID = strings.TrimSpace(correlation.CorrelationID)
+	correlation.SourceType = strings.TrimSpace(correlation.SourceType)
+	correlation.SourceID = strings.TrimSpace(correlation.SourceID)
+	correlation.TargetType = strings.TrimSpace(correlation.TargetType)
+	correlation.TargetID = strings.TrimSpace(correlation.TargetID)
+	correlation.Relationship = strings.TrimSpace(correlation.Relationship)
+
+	if correlation.CheckID == "" {
+		return errors.New("monitor correlation check id is required")
+	}
+	if correlation.SourceType == "" {
+		return errors.New("monitor correlation source type is required")
+	}
+	if correlation.SourceID == "" {
+		return errors.New("monitor correlation source id is required")
+	}
+	if correlation.TargetType == "" {
+		return errors.New("monitor correlation target type is required")
+	}
+	if correlation.TargetID == "" {
+		return errors.New("monitor correlation target id is required")
+	}
+	if correlation.Relationship == "" {
+		return errors.New("monitor correlation relationship is required")
+	}
+
+	now := time.Now().UTC()
+	if correlation.ID == "" {
+		correlation.ID = fmt.Sprintf("%d", now.UnixNano())
+	}
+	if correlation.RecordedAt.IsZero() {
+		correlation.RecordedAt = now
+	}
+	return nil
+}
+
+func appendNDJSONRecord(path string, recordType string, record any) error {
+	payload, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("encode %s: %w", recordType, err)
+	}
+	payload = append(payload, '\n')
+
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("open %s log: %w", recordType, err)
+	}
+	defer file.Close()
+
+	if _, err := file.Write(payload); err != nil {
+		return fmt.Errorf("append %s: %w", recordType, err)
+	}
+	return nil
+}
+
+func loadNDJSONRecords[T any](ctx context.Context, path string, recordType string) ([]T, error) {
+	file, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("open %s log %q: %w", recordType, path, err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	var records []T
+	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		var record T
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			return nil, fmt.Errorf("decode %s: %w", recordType, err)
+		}
+		records = append(records, record)
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan %s log %q: %w", recordType, path, err)
+	}
+	return records, nil
 }
 
 func writeFileAtomic(path string, payload []byte, mode os.FileMode) error {

@@ -135,6 +135,173 @@ func TestLocalFileStorePrivilegedToolEventRoundTrip(t *testing.T) {
 	}
 }
 
+func TestLocalFileStoreMonitorEventRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	store, err := NewLocalFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileStore() error = %v", err)
+	}
+
+	first := MonitorEvent{
+		ID:            "monitor-event-1",
+		CheckID:       "api-health",
+		IncidentID:    "incident-1",
+		CorrelationID: "corr-1",
+		EventType:     "incident_observed",
+		Condition:     "status:500",
+		Fingerprint:   "status:500",
+		Summary:       "service returned 500",
+		OccurredAt:    time.Date(2025, time.January, 1, 12, 0, 0, 0, time.UTC),
+		Metadata: map[string]string{
+			"runner_mode": "notify-only",
+		},
+	}
+	second := MonitorEvent{
+		ID:            "monitor-event-2",
+		CheckID:       "api-health",
+		IncidentID:    "incident-1",
+		CorrelationID: "corr-1",
+		EventType:     "action_outcome",
+		Outcome:       "alert_sent",
+		SessionID:     "copilot-session-123",
+		OccurredAt:    time.Date(2025, time.January, 1, 12, 1, 0, 0, time.UTC),
+	}
+
+	if err := store.AppendMonitorEvent(context.Background(), first); err != nil {
+		t.Fatalf("AppendMonitorEvent(first) error = %v", err)
+	}
+	if err := store.AppendMonitorEvent(context.Background(), second); err != nil {
+		t.Fatalf("AppendMonitorEvent(second) error = %v", err)
+	}
+
+	events, err := store.LoadMonitorEvents(context.Background())
+	if err != nil {
+		t.Fatalf("LoadMonitorEvents() error = %v", err)
+	}
+
+	if len(events) != 2 {
+		t.Fatalf("LoadMonitorEvents() len = %d, want 2", len(events))
+	}
+	if !reflect.DeepEqual(events[0], first) {
+		t.Fatalf("first monitor event mismatch\nwant: %#v\ngot:  %#v", first, events[0])
+	}
+	if !reflect.DeepEqual(events[1], second) {
+		t.Fatalf("second monitor event mismatch\nwant: %#v\ngot:  %#v", second, events[1])
+	}
+}
+
+func TestLocalFileStoreMonitorEventAssignsDefaults(t *testing.T) {
+	t.Parallel()
+
+	store, err := NewLocalFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileStore() error = %v", err)
+	}
+
+	event := MonitorEvent{
+		CheckID:   "api-health",
+		EventType: "incident_observed",
+	}
+	if err := store.AppendMonitorEvent(context.Background(), event); err != nil {
+		t.Fatalf("AppendMonitorEvent() error = %v", err)
+	}
+
+	events, err := store.LoadMonitorEvents(context.Background())
+	if err != nil {
+		t.Fatalf("LoadMonitorEvents() error = %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("LoadMonitorEvents() len = %d, want 1", len(events))
+	}
+	if events[0].ID == "" {
+		t.Fatal("expected monitor event ID to be generated")
+	}
+	if events[0].OccurredAt.IsZero() {
+		t.Fatal("expected monitor event OccurredAt to be set")
+	}
+}
+
+func TestLocalFileStoreMonitorCorrelationRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	store, err := NewLocalFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileStore() error = %v", err)
+	}
+
+	first := MonitorCorrelation{
+		ID:            "monitor-correlation-1",
+		CheckID:       "api-health",
+		IncidentID:    "incident-1",
+		CorrelationID: "corr-1",
+		SourceType:    "monitor_incident",
+		SourceID:      "incident-1",
+		TargetType:    "monitor_event",
+		TargetID:      "monitor-event-1",
+		Relationship:  "observed_as",
+		RecordedAt:    time.Date(2025, time.January, 1, 12, 0, 0, 0, time.UTC),
+	}
+	second := MonitorCorrelation{
+		ID:            "monitor-correlation-2",
+		CheckID:       "api-health",
+		IncidentID:    "incident-1",
+		CorrelationID: "corr-1",
+		SourceType:    "monitor_event",
+		SourceID:      "monitor-event-1",
+		TargetType:    "copilot_session",
+		TargetID:      "copilot-session-123",
+		Relationship:  "analyzed_by",
+		RecordedAt:    time.Date(2025, time.January, 1, 12, 1, 0, 0, time.UTC),
+		Metadata: map[string]string{
+			"phase": "future",
+		},
+	}
+
+	if err := store.AppendMonitorCorrelation(context.Background(), first); err != nil {
+		t.Fatalf("AppendMonitorCorrelation(first) error = %v", err)
+	}
+	if err := store.AppendMonitorCorrelation(context.Background(), second); err != nil {
+		t.Fatalf("AppendMonitorCorrelation(second) error = %v", err)
+	}
+
+	correlations, err := store.LoadMonitorCorrelations(context.Background())
+	if err != nil {
+		t.Fatalf("LoadMonitorCorrelations() error = %v", err)
+	}
+
+	if len(correlations) != 2 {
+		t.Fatalf("LoadMonitorCorrelations() len = %d, want 2", len(correlations))
+	}
+	if !reflect.DeepEqual(correlations[0], first) {
+		t.Fatalf("first monitor correlation mismatch\nwant: %#v\ngot:  %#v", first, correlations[0])
+	}
+	if !reflect.DeepEqual(correlations[1], second) {
+		t.Fatalf("second monitor correlation mismatch\nwant: %#v\ngot:  %#v", second, correlations[1])
+	}
+}
+
+func TestLocalFileStoreRejectsInvalidMonitorCorrelation(t *testing.T) {
+	t.Parallel()
+
+	store, err := NewLocalFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalFileStore() error = %v", err)
+	}
+
+	err = store.AppendMonitorCorrelation(context.Background(), MonitorCorrelation{
+		CheckID:      "api-health",
+		SourceType:   "monitor_incident",
+		SourceID:     "incident-1",
+		TargetType:   "monitor_event",
+		TargetID:     "event-1",
+		Relationship: "",
+	})
+	if err == nil {
+		t.Fatal("AppendMonitorCorrelation() error = nil, want validation error")
+	}
+}
+
 func TestLocalFileStoreMonitorCheckpointRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -299,6 +466,12 @@ func TestNewLocalFileStoreNormalizesPathsAndCreatesLayout(t *testing.T) {
 	}
 	if got := filepath.Base(store.privilegedToolLogPath()); got != privilegedToolLogName {
 		t.Fatalf("privilegedToolLogPath() base = %q, want %q", got, privilegedToolLogName)
+	}
+	if got := filepath.Base(store.monitorEventLogPath()); got != monitorEventLogName {
+		t.Fatalf("monitorEventLogPath() base = %q, want %q", got, monitorEventLogName)
+	}
+	if got := filepath.Base(store.monitorCorrelationLogPath()); got != monitorCorrelationName {
+		t.Fatalf("monitorCorrelationLogPath() base = %q, want %q", got, monitorCorrelationName)
 	}
 	if got := filepath.Base(store.monitorCheckpointPath("api/health")); got != "check-YXBpL2hlYWx0aA.json" {
 		t.Fatalf("monitorCheckpointPath(api/health) base = %q, want %q", got, "check-YXBpL2hlYWx0aA.json")
