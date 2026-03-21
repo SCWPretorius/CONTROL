@@ -142,6 +142,14 @@ Invoke-RestMethod -Method Post `
   -Body $body
 ```
 
+Runtime MCP registration behavior:
+
+- Send `POST /admin/mcp/servers` to the loopback admin listener with `Authorization: Bearer <token>`.
+- The JSON body must include `name`, `type`, and at least one `tools` selector, plus the same transport-specific fields accepted by `ASSISTANT_TOOL_MCP_SERVERS_JSON`.
+- Registering a new server name returns `201 Created`; posting an existing name replaces that server definition and returns `200 OK`.
+- Invalid payloads or failed validation are rejected with `400 Bad Request`; missing or incorrect bearer tokens are rejected with `401 Unauthorized`.
+- New registrations apply to future Copilot session create/resume requests only. If an existing Telegram chat should pick up the new MCP server immediately, run `/reset` for that chat before the next prompt.
+
 ## Verification
 
 ```powershell
