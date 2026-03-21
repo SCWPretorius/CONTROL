@@ -71,6 +71,11 @@ func Run(ctx context.Context, cfg config.Config, logger *log.Logger) error {
 	if err := runtime.Start(ctx); err != nil {
 		return fmt.Errorf("start copilot runtime: %w", err)
 	}
+	stopMCPAdmin, err := startMCPAdminServer(ctx, cfg, logger, runtime)
+	if err != nil {
+		closeErr := runtime.Close()
+		return errors.Join(fmt.Errorf("start MCP admin server: %w", err), closeErr)
+	}
 
 	orchestrator, err := router.NewOrchestrator(
 		sessionResolver{runtime: runtime},
@@ -79,8 +84,9 @@ func Run(ctx context.Context, cfg config.Config, logger *log.Logger) error {
 		router.WithRuntimeStatusProvider(statusTracker),
 	)
 	if err != nil {
+		adminErr := stopMCPAdmin()
 		closeErr := runtime.Close()
-		return errors.Join(err, closeErr)
+		return errors.Join(err, adminErr, closeErr)
 	}
 
 	var adapter *telegram.Adapter
@@ -100,12 +106,13 @@ func Run(ctx context.Context, cfg config.Config, logger *log.Logger) error {
 		}),
 	)
 	if err != nil {
+		adminErr := stopMCPAdmin()
 		closeErr := runtime.Close()
-		return errors.Join(fmt.Errorf("create telegram adapter: %w", err), closeErr)
+		return errors.Join(fmt.Errorf("create telegram adapter: %w", err), adminErr, closeErr)
 	}
 
 	logger.Printf(
-		"assistant ready transport=%s model=%s namespace=%s allowed_user=%d allowed_chat=%d resume_sessions=%t runtime_dir=%s storage_dir=%s privileged_tools=%t google_tools=%t custom_tool_count=%d",
+		"assistant ready transport=%s model=%s namespace=%s allowed_user=%d allowed_chat=%d resume_sessions=%t runtime_dir=%s storage_dir=%s privileged_tools=%t google_tools=%t mcp_server_count=%d mcp_admin_enabled=%t custom_tool_count=%d",
 		cfg.Copilot.Transport(),
 		cfg.Session.Model,
 		cfg.Session.Namespace,
@@ -116,12 +123,15 @@ func Run(ctx context.Context, cfg config.Config, logger *log.Logger) error {
 		cfg.Paths.StorageDir,
 		toolset.PrivilegedEnabled,
 		toolset.GoogleEnabled,
+		len(cfg.Tools.MCP.Servers),
+		cfg.Tools.MCP.Admin.Enabled(),
 		len(toolset.Tools),
 	)
 
 	runErr := adapter.Start(ctx)
+	adminErr := stopMCPAdmin()
 	closeErr := runtime.Close()
-	return errors.Join(runErr, closeErr)
+	return errors.Join(runErr, adminErr, closeErr)
 }
 
 type sessionResolver struct {

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -69,6 +70,7 @@ type SessionOptions struct {
 	ConfigDir       string
 	ClientName      string
 	Tools           []sdk.Tool
+	MCPServers      map[string]sdk.MCPServerConfig
 }
 
 func (o SessionOptions) CreateConfig(sessionID string, hooks RuntimeHooks, externalKey string) *sdk.SessionConfig {
@@ -79,6 +81,7 @@ func (o SessionOptions) CreateConfig(sessionID string, hooks RuntimeHooks, exter
 		ReasoningEffort:     strings.TrimSpace(o.ReasoningEffort),
 		ConfigDir:           strings.TrimSpace(o.ConfigDir),
 		Tools:               cloneTools(o.Tools),
+		MCPServers:          cloneMCPServers(o.MCPServers),
 		OnPermissionRequest: hooks.wrapPermissionHandler(externalKey),
 		OnUserInputRequest:  hooks.OnUserInputRequest,
 		Hooks:               hooks.wrapSessionHooks(externalKey),
@@ -94,6 +97,7 @@ func (o SessionOptions) ResumeConfig(hooks RuntimeHooks, externalKey string) *sd
 		ReasoningEffort:     strings.TrimSpace(o.ReasoningEffort),
 		ConfigDir:           strings.TrimSpace(o.ConfigDir),
 		Tools:               cloneTools(o.Tools),
+		MCPServers:          cloneMCPServers(o.MCPServers),
 		OnPermissionRequest: hooks.wrapPermissionHandler(externalKey),
 		OnUserInputRequest:  hooks.OnUserInputRequest,
 		Hooks:               hooks.wrapSessionHooks(externalKey),
@@ -126,6 +130,7 @@ func ConfigFromFoundation(cfg config.Config) RuntimeConfig {
 			WorkingDir:      cfg.Session.WorkingDir,
 			ConfigDir:       cfg.Session.ConfigDir,
 			ClientName:      defaultClientName,
+			MCPServers:      configMCPServersToSDK(cfg.Tools.MCP.Servers),
 		},
 		LogLevel: defaultLogLevel,
 	}
@@ -548,25 +553,28 @@ type clientAPI interface {
 
 // ClientRuntime is the concrete Copilot SDK-backed runtime implementation.
 type ClientRuntime struct {
-	cfg      RuntimeConfig
-	hooks    RuntimeHooks
-	client   clientAPI
-	mu       sync.Mutex
-	started  bool
-	starting chan struct{}
-	startErr error
-	sessions map[string]*SessionHandle
-	pending  map[string]chan struct{}
+	cfg        RuntimeConfig
+	hooks      RuntimeHooks
+	client     clientAPI
+	mu         sync.Mutex
+	mcpMu      sync.RWMutex
+	started    bool
+	starting   chan struct{}
+	startErr   error
+	sessions   map[string]*SessionHandle
+	pending    map[string]chan struct{}
+	mcpServers map[string]sdk.MCPServerConfig
 }
 
 // NewRuntime constructs the Copilot runtime boundary around the official Go SDK.
 func NewRuntime(cfg RuntimeConfig, hooks RuntimeHooks) *ClientRuntime {
 	return &ClientRuntime{
-		cfg:      cfg,
-		hooks:    hooks,
-		client:   sdk.NewClient(cfg.Endpoint.ClientOptions(cfg.LogLevel)),
-		sessions: make(map[string]*SessionHandle),
-		pending:  make(map[string]chan struct{}),
+		cfg:        cfg,
+		hooks:      hooks,
+		client:     sdk.NewClient(cfg.Endpoint.ClientOptions(cfg.LogLevel)),
+		sessions:   make(map[string]*SessionHandle),
+		pending:    make(map[string]chan struct{}),
+		mcpServers: cloneMCPServers(cfg.Session.MCPServers),
 	}
 }
 
@@ -729,19 +737,58 @@ func (r *ClientRuntime) EnsureSession(ctx context.Context, key ExternalSessionKe
 	}
 }
 
+// RegisterMCPServer validates and registers or replaces one MCP server definition.
+// New sessions created or resumed after registration receive the updated snapshot.
+func (r *ClientRuntime) RegisterMCPServer(ctx context.Context, name string, server config.MCPServerConfig) (bool, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false, errors.New("mcp server name must not be empty")
+	}
+
+	normalized := server
+	if err := config.ValidateAndNormalizeMCPServer(r.cfg.Session.WorkingDir, name, &normalized); err != nil {
+		return false, err
+	}
+
+	converted := configMCPServersToSDK(map[string]config.MCPServerConfig{name: normalized})
+	entry, ok := converted[name]
+	if !ok {
+		return false, fmt.Errorf("convert MCP server %q to SDK config", name)
+	}
+
+	r.mcpMu.Lock()
+	defer r.mcpMu.Unlock()
+	if r.mcpServers == nil {
+		r.mcpServers = make(map[string]sdk.MCPServerConfig)
+	}
+	_, updated := r.mcpServers[name]
+	r.mcpServers[name] = entry
+	r.hooks.emit(ctx, RuntimeEvent{
+		Kind:    "mcp.server_registered",
+		Message: name,
+		Metadata: map[string]string{
+			"name":    name,
+			"type":    normalized.Type,
+			"updated": strconv.FormatBool(updated),
+		},
+	})
+	return updated, nil
+}
+
 func (r *ClientRuntime) loadSession(ctx context.Context, sessionID, externalKey string) (*SessionHandle, string, error) {
 	var (
 		sdkSession *sdk.Session
 		err        error
 	)
+	sessionOptions := r.sessionOptionsSnapshot()
 
-	if r.cfg.Session.ResumeSessions {
+	if sessionOptions.ResumeSessions {
 		r.hooks.emit(context.Background(), RuntimeEvent{
 			Kind:        "session.resuming",
 			ExternalKey: externalKey,
 			SessionID:   sessionID,
 		})
-		sdkSession, err = r.client.ResumeSession(ctx, sessionID, r.cfg.Session.ResumeConfig(r.hooks, externalKey))
+		sdkSession, err = r.client.ResumeSession(ctx, sessionID, sessionOptions.ResumeConfig(r.hooks, externalKey))
 		if err == nil {
 			return r.newSessionHandle(sessionID, externalKey, sdkSession), "session.resumed", nil
 		}
@@ -767,7 +814,7 @@ func (r *ClientRuntime) loadSession(ctx context.Context, sessionID, externalKey 
 		ExternalKey: externalKey,
 		SessionID:   sessionID,
 	})
-	sdkSession, err = r.client.CreateSession(ctx, r.cfg.Session.CreateConfig(sessionID, r.hooks, externalKey))
+	sdkSession, err = r.client.CreateSession(ctx, sessionOptions.CreateConfig(sessionID, r.hooks, externalKey))
 	if err != nil {
 		r.hooks.emit(context.Background(), RuntimeEvent{
 			Kind:        "session.create_failed",
@@ -779,6 +826,14 @@ func (r *ClientRuntime) loadSession(ctx context.Context, sessionID, externalKey 
 	}
 
 	return r.newSessionHandle(sessionID, externalKey, sdkSession), "session.created", nil
+}
+
+func (r *ClientRuntime) sessionOptionsSnapshot() SessionOptions {
+	session := r.cfg.Session
+	r.mcpMu.RLock()
+	session.MCPServers = cloneMCPServers(r.mcpServers)
+	r.mcpMu.RUnlock()
+	return session
 }
 
 func (r *ClientRuntime) newSessionHandle(sessionID, externalKey string, session *sdk.Session) *SessionHandle {
@@ -867,6 +922,86 @@ func cloneTools(tools []sdk.Tool) []sdk.Tool {
 	cloned := make([]sdk.Tool, len(tools))
 	copy(cloned, tools)
 	return cloned
+}
+
+func cloneMCPServers(servers map[string]sdk.MCPServerConfig) map[string]sdk.MCPServerConfig {
+	if len(servers) == 0 {
+		return nil
+	}
+
+	cloned := make(map[string]sdk.MCPServerConfig, len(servers))
+	for name, server := range servers {
+		serverClone := make(sdk.MCPServerConfig, len(server))
+		for key, value := range server {
+			serverClone[key] = cloneMCPValue(value)
+		}
+		cloned[name] = serverClone
+	}
+
+	return cloned
+}
+
+func cloneMCPValue(value any) any {
+	switch typed := value.(type) {
+	case []string:
+		return append([]string(nil), typed...)
+	case map[string]string:
+		cloned := make(map[string]string, len(typed))
+		for key, entry := range typed {
+			cloned[key] = entry
+		}
+		return cloned
+	default:
+		return typed
+	}
+}
+
+func configMCPServersToSDK(servers map[string]config.MCPServerConfig) map[string]sdk.MCPServerConfig {
+	if len(servers) == 0 {
+		return nil
+	}
+
+	converted := make(map[string]sdk.MCPServerConfig, len(servers))
+	for name, server := range servers {
+		entry := sdk.MCPServerConfig{
+			"type":  server.Type,
+			"tools": append([]string(nil), server.Tools...),
+		}
+		if server.Timeout > 0 {
+			entry["timeout"] = server.Timeout
+		}
+
+		switch server.Type {
+		case "local", "stdio":
+			entry["command"] = server.Command
+			if len(server.Args) > 0 {
+				entry["args"] = append([]string(nil), server.Args...)
+			}
+			if len(server.Env) > 0 {
+				env := make(map[string]string, len(server.Env))
+				for key, value := range server.Env {
+					env[key] = value
+				}
+				entry["env"] = env
+			}
+			if strings.TrimSpace(server.Cwd) != "" {
+				entry["cwd"] = server.Cwd
+			}
+		case "http", "sse":
+			entry["url"] = server.URL
+			if len(server.Headers) > 0 {
+				headers := make(map[string]string, len(server.Headers))
+				for key, value := range server.Headers {
+					headers[key] = value
+				}
+				entry["headers"] = headers
+			}
+		}
+
+		converted[name] = entry
+	}
+
+	return converted
 }
 
 func defaultIfBlank(value, fallback string) string {
