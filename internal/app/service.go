@@ -111,6 +111,16 @@ func Run(ctx context.Context, cfg config.Config, logger *log.Logger) error {
 		return errors.Join(fmt.Errorf("create telegram adapter: %w", err), adminErr, closeErr)
 	}
 
+	monitorRunner, err := newMonitorRunner(cfg, logger, sessionStore, adapter)
+	if err != nil {
+		adminErr := stopMCPAdmin()
+		closeErr := runtime.Close()
+		return errors.Join(fmt.Errorf("create monitor runner: %w", err), adminErr, closeErr)
+	}
+	monitorCtx, stopMonitor := context.WithCancel(ctx)
+	waitMonitor := startMonitorLifecycle(monitorCtx, monitorRunner)
+	defer stopMonitor()
+
 	logger.Printf(
 		"assistant ready transport=%s model=%s namespace=%s allowed_user=%d allowed_chat=%d resume_sessions=%t runtime_dir=%s storage_dir=%s privileged_tools=%t google_tools=%t mcp_server_count=%d mcp_admin_enabled=%t custom_tool_count=%d",
 		cfg.Copilot.Transport(),
@@ -129,9 +139,11 @@ func Run(ctx context.Context, cfg config.Config, logger *log.Logger) error {
 	)
 
 	runErr := adapter.Start(ctx)
+	stopMonitor()
+	monitorErr := waitMonitor()
 	adminErr := stopMCPAdmin()
 	closeErr := runtime.Close()
-	return errors.Join(runErr, adminErr, closeErr)
+	return errors.Join(runErr, monitorErr, adminErr, closeErr)
 }
 
 type sessionResolver struct {

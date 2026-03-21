@@ -491,6 +491,41 @@ func TestHandleTelegramMessageContinuesWhenTypingIndicatorFails(t *testing.T) {
 	}
 }
 
+func TestStartMonitorLifecycleRunsInBackgroundAndStopsWithContext(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	started := make(chan struct{})
+	runner := &stubMonitorLifecycle{
+		run: func(ctx context.Context) error {
+			close(started)
+			<-ctx.Done()
+			return nil
+		},
+	}
+
+	start := time.Now()
+	wait := startMonitorLifecycle(ctx, runner)
+	select {
+	case <-started:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("monitor runner did not start")
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("startMonitorLifecycle() blocked for %s", elapsed)
+	}
+
+	cancel()
+	if err := wait(); err != nil {
+		t.Fatalf("wait() error = %v", err)
+	}
+	if runner.calls.Load() != 1 {
+		t.Fatalf("Run() calls = %d, want 1", runner.calls.Load())
+	}
+}
+
 type stubTelegramResponder struct {
 	typingCount atomic.Int32
 	replyText   string
@@ -511,5 +546,18 @@ func (s *stubTelegramResponder) Reply(_ context.Context, _ router.Message, text 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.replyText = text
+	return nil
+}
+
+type stubMonitorLifecycle struct {
+	calls atomic.Int32
+	run   func(context.Context) error
+}
+
+func (s *stubMonitorLifecycle) Run(ctx context.Context) error {
+	s.calls.Add(1)
+	if s.run != nil {
+		return s.run(ctx)
+	}
 	return nil
 }
