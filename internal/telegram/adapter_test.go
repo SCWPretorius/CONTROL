@@ -215,6 +215,50 @@ func TestSendTypingSendsTypingChatAction(t *testing.T) {
 	}
 }
 
+func TestSendAlertUsesConfiguredAllowedChat(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeBotClient{}
+	adapter := &Adapter{
+		bot: client,
+		access: AccessControl{
+			AllowedChatID: -100123,
+		},
+	}
+
+	err := adapter.SendAlert(context.Background(), " alert ")
+	if err != nil {
+		t.Fatalf("SendAlert() error = %v", err)
+	}
+
+	if client.sent == nil {
+		t.Fatal("SendAlert() did not send a message")
+	}
+
+	if got, want := client.sent.ChatID, any(int64(-100123)); got != want {
+		t.Fatalf("ChatID = %#v, want %#v", got, want)
+	}
+
+	if got, want := client.sent.Text, "alert"; got != want {
+		t.Fatalf("Text = %q, want %q", got, want)
+	}
+
+	if client.sent.ReplyParameters != nil {
+		t.Fatalf("ReplyParameters = %#v, want nil", client.sent.ReplyParameters)
+	}
+}
+
+func TestSendAlertRequiresConfiguredAllowedChat(t *testing.T) {
+	t.Parallel()
+
+	adapter := &Adapter{bot: &fakeBotClient{}}
+
+	err := adapter.SendAlert(context.Background(), "alert")
+	if !errors.Is(err, ErrAlertChatUnset) {
+		t.Fatalf("SendAlert() error = %v, want %v", err, ErrAlertChatUnset)
+	}
+}
+
 type fakeBotClient struct {
 	sent       *tgbot.SendMessageParams
 	chatAction *tgbot.SendChatActionParams
