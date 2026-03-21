@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -87,6 +88,7 @@ type GoogleToolConfig struct {
 
 type MCPToolConfig struct {
 	Servers map[string]MCPServerConfig
+	Admin   MCPAdminConfig
 }
 
 type MCPServerConfig struct {
@@ -99,6 +101,11 @@ type MCPServerConfig struct {
 	Cwd     string
 	URL     string
 	Headers map[string]string
+}
+
+type MCPAdminConfig struct {
+	ListenAddress string
+	BearerToken   string
 }
 
 type GoogleOAuthConfig struct {
@@ -139,6 +146,10 @@ func (c GoogleToolConfig) RuntimeEnabled() bool {
 
 func (c MCPToolConfig) Enabled() bool {
 	return len(c.Servers) > 0
+}
+
+func (c MCPAdminConfig) Enabled() bool {
+	return strings.TrimSpace(c.ListenAddress) != "" && strings.TrimSpace(c.BearerToken) != ""
 }
 
 type PrivilegedToolConfig struct {
@@ -193,7 +204,12 @@ func LoadFromLookup(lookup func(string) (string, bool), getwd func() (string, er
 				},
 				AccessToken: strings.TrimSpace(optionalEnv(lookup, "GOOGLE_OAUTH_ACCESS_TOKEN", "")),
 			},
-			MCP:     MCPToolConfig{},
+			MCP: MCPToolConfig{
+				Admin: MCPAdminConfig{
+					ListenAddress: optionalEnv(lookup, "ASSISTANT_TOOL_MCP_ADMIN_LISTEN_ADDR", ""),
+					BearerToken:   optionalEnv(lookup, "ASSISTANT_TOOL_MCP_ADMIN_BEARER_TOKEN", ""),
+				},
+			},
 			Runtime: ToolRuntimeConfig{},
 		},
 	}
@@ -256,7 +272,10 @@ func LoadFromLookup(lookup func(string) (string, bool), getwd func() (string, er
 	if err != nil {
 		return Config{}, err
 	}
-	if err := validateAndNormalizeMCPServers(cwd, cfg.Tools.MCP.Servers); err != nil {
+	if err := ValidateAndNormalizeMCPServers(cwd, cfg.Tools.MCP.Servers); err != nil {
+		return Config{}, err
+	}
+	if err := ValidateAndNormalizeMCPAdminConfig(&cfg.Tools.MCP.Admin); err != nil {
 		return Config{}, err
 	}
 
@@ -540,6 +559,10 @@ func validateShellAutoApproveEntry(entry string) error {
 	return nil
 }
 
+func ValidateAndNormalizeMCPServers(baseDir string, servers map[string]MCPServerConfig) error {
+	return validateAndNormalizeMCPServers(baseDir, servers)
+}
+
 func validateAndNormalizeMCPServers(baseDir string, servers map[string]MCPServerConfig) error {
 	for name, server := range servers {
 		trimmedName := strings.TrimSpace(name)
@@ -556,6 +579,10 @@ func validateAndNormalizeMCPServers(baseDir string, servers map[string]MCPServer
 	}
 
 	return nil
+}
+
+func ValidateAndNormalizeMCPServer(baseDir, name string, server *MCPServerConfig) error {
+	return validateAndNormalizeMCPServer(baseDir, name, server)
 }
 
 func validateAndNormalizeMCPServer(baseDir, name string, server *MCPServerConfig) error {
@@ -615,6 +642,34 @@ func validateAndNormalizeMCPServer(baseDir, name string, server *MCPServerConfig
 		}
 	default:
 		return fmt.Errorf("ASSISTANT_TOOL_MCP_SERVERS_JSON server %q has unsupported type %q", name, server.Type)
+	}
+
+	return nil
+}
+
+func ValidateAndNormalizeMCPAdminConfig(admin *MCPAdminConfig) error {
+	if admin == nil {
+		return nil
+	}
+
+	admin.ListenAddress = strings.TrimSpace(admin.ListenAddress)
+	admin.BearerToken = strings.TrimSpace(admin.BearerToken)
+	if admin.ListenAddress == "" && admin.BearerToken == "" {
+		return nil
+	}
+	if admin.ListenAddress == "" || admin.BearerToken == "" {
+		return errors.New("ASSISTANT_TOOL_MCP_ADMIN_LISTEN_ADDR and ASSISTANT_TOOL_MCP_ADMIN_BEARER_TOKEN must both be set to enable runtime MCP registration")
+	}
+
+	host, port, err := net.SplitHostPort(admin.ListenAddress)
+	if err != nil {
+		return fmt.Errorf("ASSISTANT_TOOL_MCP_ADMIN_LISTEN_ADDR must be a valid host:port: %w", err)
+	}
+	if host != "127.0.0.1" {
+		return errors.New("ASSISTANT_TOOL_MCP_ADMIN_LISTEN_ADDR must bind to 127.0.0.1")
+	}
+	if strings.TrimSpace(port) == "" {
+		return errors.New("ASSISTANT_TOOL_MCP_ADMIN_LISTEN_ADDR must include a TCP port")
 	}
 
 	return nil

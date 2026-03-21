@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -552,25 +553,28 @@ type clientAPI interface {
 
 // ClientRuntime is the concrete Copilot SDK-backed runtime implementation.
 type ClientRuntime struct {
-	cfg      RuntimeConfig
-	hooks    RuntimeHooks
-	client   clientAPI
-	mu       sync.Mutex
-	started  bool
-	starting chan struct{}
-	startErr error
-	sessions map[string]*SessionHandle
-	pending  map[string]chan struct{}
+	cfg        RuntimeConfig
+	hooks      RuntimeHooks
+	client     clientAPI
+	mu         sync.Mutex
+	mcpMu      sync.RWMutex
+	started    bool
+	starting   chan struct{}
+	startErr   error
+	sessions   map[string]*SessionHandle
+	pending    map[string]chan struct{}
+	mcpServers map[string]sdk.MCPServerConfig
 }
 
 // NewRuntime constructs the Copilot runtime boundary around the official Go SDK.
 func NewRuntime(cfg RuntimeConfig, hooks RuntimeHooks) *ClientRuntime {
 	return &ClientRuntime{
-		cfg:      cfg,
-		hooks:    hooks,
-		client:   sdk.NewClient(cfg.Endpoint.ClientOptions(cfg.LogLevel)),
-		sessions: make(map[string]*SessionHandle),
-		pending:  make(map[string]chan struct{}),
+		cfg:        cfg,
+		hooks:      hooks,
+		client:     sdk.NewClient(cfg.Endpoint.ClientOptions(cfg.LogLevel)),
+		sessions:   make(map[string]*SessionHandle),
+		pending:    make(map[string]chan struct{}),
+		mcpServers: cloneMCPServers(cfg.Session.MCPServers),
 	}
 }
 
@@ -733,19 +737,58 @@ func (r *ClientRuntime) EnsureSession(ctx context.Context, key ExternalSessionKe
 	}
 }
 
+// RegisterMCPServer validates and registers or replaces one MCP server definition.
+// New sessions created or resumed after registration receive the updated snapshot.
+func (r *ClientRuntime) RegisterMCPServer(ctx context.Context, name string, server config.MCPServerConfig) (bool, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false, errors.New("mcp server name must not be empty")
+	}
+
+	normalized := server
+	if err := config.ValidateAndNormalizeMCPServer(r.cfg.Session.WorkingDir, name, &normalized); err != nil {
+		return false, err
+	}
+
+	converted := configMCPServersToSDK(map[string]config.MCPServerConfig{name: normalized})
+	entry, ok := converted[name]
+	if !ok {
+		return false, fmt.Errorf("convert MCP server %q to SDK config", name)
+	}
+
+	r.mcpMu.Lock()
+	defer r.mcpMu.Unlock()
+	if r.mcpServers == nil {
+		r.mcpServers = make(map[string]sdk.MCPServerConfig)
+	}
+	_, updated := r.mcpServers[name]
+	r.mcpServers[name] = entry
+	r.hooks.emit(ctx, RuntimeEvent{
+		Kind:    "mcp.server_registered",
+		Message: name,
+		Metadata: map[string]string{
+			"name":    name,
+			"type":    normalized.Type,
+			"updated": strconv.FormatBool(updated),
+		},
+	})
+	return updated, nil
+}
+
 func (r *ClientRuntime) loadSession(ctx context.Context, sessionID, externalKey string) (*SessionHandle, string, error) {
 	var (
 		sdkSession *sdk.Session
 		err        error
 	)
+	sessionOptions := r.sessionOptionsSnapshot()
 
-	if r.cfg.Session.ResumeSessions {
+	if sessionOptions.ResumeSessions {
 		r.hooks.emit(context.Background(), RuntimeEvent{
 			Kind:        "session.resuming",
 			ExternalKey: externalKey,
 			SessionID:   sessionID,
 		})
-		sdkSession, err = r.client.ResumeSession(ctx, sessionID, r.cfg.Session.ResumeConfig(r.hooks, externalKey))
+		sdkSession, err = r.client.ResumeSession(ctx, sessionID, sessionOptions.ResumeConfig(r.hooks, externalKey))
 		if err == nil {
 			return r.newSessionHandle(sessionID, externalKey, sdkSession), "session.resumed", nil
 		}
@@ -771,7 +814,7 @@ func (r *ClientRuntime) loadSession(ctx context.Context, sessionID, externalKey 
 		ExternalKey: externalKey,
 		SessionID:   sessionID,
 	})
-	sdkSession, err = r.client.CreateSession(ctx, r.cfg.Session.CreateConfig(sessionID, r.hooks, externalKey))
+	sdkSession, err = r.client.CreateSession(ctx, sessionOptions.CreateConfig(sessionID, r.hooks, externalKey))
 	if err != nil {
 		r.hooks.emit(context.Background(), RuntimeEvent{
 			Kind:        "session.create_failed",
@@ -783,6 +826,14 @@ func (r *ClientRuntime) loadSession(ctx context.Context, sessionID, externalKey 
 	}
 
 	return r.newSessionHandle(sessionID, externalKey, sdkSession), "session.created", nil
+}
+
+func (r *ClientRuntime) sessionOptionsSnapshot() SessionOptions {
+	session := r.cfg.Session
+	r.mcpMu.RLock()
+	session.MCPServers = cloneMCPServers(r.mcpServers)
+	r.mcpMu.RUnlock()
+	return session
 }
 
 func (r *ClientRuntime) newSessionHandle(sessionID, externalKey string, session *sdk.Session) *SessionHandle {

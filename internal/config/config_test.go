@@ -206,6 +206,73 @@ func TestLoadFromLookupLoadsAndNormalizesMCPServers(t *testing.T) {
 	}
 }
 
+func TestLoadFromLookupLoadsMCPAdminConfig(t *testing.T) {
+	t.Parallel()
+
+	cwd := t.TempDir()
+	cfg, err := LoadFromLookup(
+		envLookup(map[string]string{
+			"TELEGRAM_BOT_TOKEN":                    "token",
+			"TELEGRAM_ALLOWED_USER_ID":              "1",
+			"TELEGRAM_ALLOWED_CHAT_ID":              "2",
+			"COPILOT_CLI_PATH":                      "copilot",
+			"ASSISTANT_TOOL_MCP_ADMIN_LISTEN_ADDR":  "127.0.0.1:8788",
+			"ASSISTANT_TOOL_MCP_ADMIN_BEARER_TOKEN": " secret-token ",
+		}),
+		func() (string, error) { return cwd, nil },
+	)
+	if err != nil {
+		t.Fatalf("LoadFromLookup() error = %v", err)
+	}
+
+	if !cfg.Tools.MCP.Admin.Enabled() {
+		t.Fatal("MCP admin should be enabled when listen addr and token are set")
+	}
+	if got, want := cfg.Tools.MCP.Admin.ListenAddress, "127.0.0.1:8788"; got != want {
+		t.Fatalf("ListenAddress = %q, want %q", got, want)
+	}
+	if got, want := cfg.Tools.MCP.Admin.BearerToken, "secret-token"; got != want {
+		t.Fatalf("BearerToken = %q, want %q", got, want)
+	}
+}
+
+func TestLoadFromLookupRejectsPartialMCPAdminConfig(t *testing.T) {
+	t.Parallel()
+
+	_, err := LoadFromLookup(
+		envLookup(map[string]string{
+			"TELEGRAM_BOT_TOKEN":                   "token",
+			"TELEGRAM_ALLOWED_USER_ID":             "1",
+			"TELEGRAM_ALLOWED_CHAT_ID":             "2",
+			"COPILOT_CLI_PATH":                     "copilot",
+			"ASSISTANT_TOOL_MCP_ADMIN_LISTEN_ADDR": "127.0.0.1:8788",
+		}),
+		func() (string, error) { return t.TempDir(), nil },
+	)
+	if err == nil {
+		t.Fatal("LoadFromLookup() error = nil, want MCP admin config error")
+	}
+}
+
+func TestLoadFromLookupRejectsNonLoopbackMCPAdminAddress(t *testing.T) {
+	t.Parallel()
+
+	_, err := LoadFromLookup(
+		envLookup(map[string]string{
+			"TELEGRAM_BOT_TOKEN":                    "token",
+			"TELEGRAM_ALLOWED_USER_ID":              "1",
+			"TELEGRAM_ALLOWED_CHAT_ID":              "2",
+			"COPILOT_CLI_PATH":                      "copilot",
+			"ASSISTANT_TOOL_MCP_ADMIN_LISTEN_ADDR":  "0.0.0.0:8788",
+			"ASSISTANT_TOOL_MCP_ADMIN_BEARER_TOKEN": "secret-token",
+		}),
+		func() (string, error) { return t.TempDir(), nil },
+	)
+	if err == nil {
+		t.Fatal("LoadFromLookup() error = nil, want loopback-only MCP admin error")
+	}
+}
+
 func TestLoadFromLookupRejectsConflictingCopilotEndpoints(t *testing.T) {
 	t.Parallel()
 

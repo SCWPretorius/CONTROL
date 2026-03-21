@@ -52,6 +52,8 @@ internal/tools        Google Workspace and privileged local tools
 | `GOOGLE_OAUTH_SCOPES` | `https://www.googleapis.com/auth/gmail.modify,https://www.googleapis.com/auth/calendar,https://www.googleapis.com/auth/userinfo.email` |
 | `GOOGLE_OAUTH_ACCESS_TOKEN` | empty; when set alongside the Google OAuth app config, enables the Gmail + Calendar Copilot tools |
 | `ASSISTANT_TOOL_MCP_SERVERS_JSON` | empty; optional JSON object of named MCP servers wired into every Copilot session |
+| `ASSISTANT_TOOL_MCP_ADMIN_LISTEN_ADDR` | empty; when set together with `ASSISTANT_TOOL_MCP_ADMIN_BEARER_TOKEN`, enables the local runtime MCP registration endpoint on `127.0.0.1` |
+| `ASSISTANT_TOOL_MCP_ADMIN_BEARER_TOKEN` | empty; required bearer token for the local runtime MCP registration endpoint |
 | `ASSISTANT_TOOL_ALLOWED_WORKSPACE_ROOTS` | current working directory |
 | `ASSISTANT_TOOL_WRITABLE_ROOTS` | `<runtime dir>` and `<storage dir>` |
 | `ASSISTANT_TOOL_SHELL_AUTO_APPROVE` | empty |
@@ -66,6 +68,7 @@ The tool layer uses shared config from `internal/config` so privileged capabilit
 - `GOOGLE_OAUTH_*` is the single shared OAuth client config for Gmail + Calendar integrations.
 - `GOOGLE_OAUTH_ACCESS_TOKEN` is the v1 runtime bearer token for Google Workspace tools. Leave it unset to keep Google tools disabled while still building and testing locally.
 - `ASSISTANT_TOOL_MCP_SERVERS_JSON` is an optional JSON object keyed by MCP server name. Supported `type` values are `local`/`stdio` for subprocess servers and `http`/`sse` for remote servers. Every server must declare at least one `tools` selector.
+- `ASSISTANT_TOOL_MCP_ADMIN_LISTEN_ADDR` and `ASSISTANT_TOOL_MCP_ADMIN_BEARER_TOKEN` enable a loopback-only admin endpoint for registering MCP servers at runtime. Both must be set together, and the listener must bind to `127.0.0.1`.
 - `ASSISTANT_TOOL_ALLOWED_WORKSPACE_ROOTS` is the allowlist of workspace roots tools may read from. Use the OS path-list separator (`;` on Windows, `:` on Unix-like systems).
 - `ASSISTANT_TOOL_WRITABLE_ROOTS` is the narrower set of assistant-owned roots tools may write to. Use the same OS path-list separator.
 - `ASSISTANT_TOOL_SHELL_AUTO_APPROVE` is a comma-separated allowlist of exact command prefixes that can be auto-approved without interactive review. Keep it intentionally small and do not include shell chaining/operators.
@@ -73,8 +76,10 @@ The tool layer uses shared config from `internal/config` so privileged capabilit
 
 MCP notes:
 
-- MCP servers are loaded only at startup and attached to every created/resumed Copilot session.
-- CONTROL does not allow Telegram users to add or mutate MCP servers at runtime.
+- `ASSISTANT_TOOL_MCP_SERVERS_JSON` still seeds startup MCP servers for the initial runtime snapshot.
+- When the local admin endpoint is enabled, operators can register or replace MCP servers at runtime without restarting CONTROL.
+- Newly registered MCP servers apply to future session create/resume operations only; existing in-memory sessions keep their current MCP snapshot until they are reset or reloaded.
+- CONTROL still does not allow Telegram users to add or mutate MCP servers at runtime.
 - MCP permission requests remain deny-by-default unless a future policy explicitly approves them.
 - Keep MCP secrets out of git history. Put bearer tokens in local-only environment values and use placeholders in committed examples.
 
@@ -98,6 +103,8 @@ $env:GOOGLE_OAUTH_CLIENT_SECRET = "replace-me"
 $env:GOOGLE_OAUTH_REDIRECT_URL = "http://127.0.0.1:8787/oauth/callback"
 $env:GOOGLE_OAUTH_ACCESS_TOKEN = "replace-with-a-valid-user-access-token"
 $env:ASSISTANT_TOOL_MCP_SERVERS_JSON = '{"filesystem":{"type":"stdio","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","C:\\Users\\you\\Documents\\Repos\\CONTROL"],"tools":["*"]},"issues":{"type":"http","url":"https://example.com/mcp","headers":{"Authorization":"Bearer replace-me"},"tools":["list_issues"]}}'
+$env:ASSISTANT_TOOL_MCP_ADMIN_LISTEN_ADDR = "127.0.0.1:8788"
+$env:ASSISTANT_TOOL_MCP_ADMIN_BEARER_TOKEN = "replace-with-a-long-random-token"
 $env:ASSISTANT_TOOL_ALLOWED_WORKSPACE_ROOTS = "C:\Users\you\Documents\Repos\CONTROL"
 $env:ASSISTANT_TOOL_WRITABLE_ROOTS = "C:\Users\you\Documents\Repos\CONTROL\var\runtime;C:\Users\you\Documents\Repos\CONTROL\var\storage"
 $env:ASSISTANT_TOOL_SHELL_AUTO_APPROVE = "git status --short,go test ./internal/config"
@@ -113,7 +120,27 @@ Expected result with valid runtime credentials:
 - privileged tools are always registered behind the local policy layer
 - Google Workspace tools are registered only when both OAuth app config and `GOOGLE_OAUTH_ACCESS_TOKEN` are set
 - configured MCP servers are attached to every Copilot session create/resume request
+- when the local MCP admin endpoint is enabled, operators can register additional MCP servers for future sessions via `POST /admin/mcp/servers`
 - the process logs startup/runtime activity and continues serving until stopped
+
+Runtime MCP registration example:
+
+```powershell
+$headers = @{ Authorization = "Bearer replace-with-a-long-random-token" }
+$body = @{
+  name = "issues"
+  type = "http"
+  url = "https://example.com/mcp"
+  tools = @("list_issues")
+  headers = @{ Authorization = "Bearer replace-me" }
+} | ConvertTo-Json
+
+Invoke-RestMethod -Method Post `
+  -Uri "http://127.0.0.1:8788/admin/mcp/servers" `
+  -Headers $headers `
+  -ContentType "application/json" `
+  -Body $body
+```
 
 ## Verification
 

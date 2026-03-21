@@ -439,10 +439,112 @@ func TestStartSerializesConcurrentCalls(t *testing.T) {
 	}
 }
 
+func TestRegisterMCPServerAffectsFutureCreateSessionConfigs(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeClient{}
+	runtime := NewRuntime(RuntimeConfig{
+		Session: SessionOptions{
+			Namespace:      "test-runtime",
+			WorkingDir:     t.TempDir(),
+			ClientName:     "control-tests",
+			ResumeSessions: false,
+			MCPServers: map[string]sdk.MCPServerConfig{
+				"filesystem": {
+					"type":    "stdio",
+					"command": "npx",
+					"tools":   []string{"*"},
+				},
+			},
+		},
+	}, RuntimeHooks{})
+	runtime.client = client
+
+	if _, err := runtime.EnsureSession(context.Background(), ExternalSessionKey{
+		Identifiers: map[string]string{"chat_id": "1", "transport": "telegram"},
+	}); err != nil {
+		t.Fatalf("EnsureSession(initial) error = %v", err)
+	}
+
+	if got := client.createConfigs[0].MCPServers["filesystem"]["command"]; got != "npx" {
+		t.Fatalf("initial CreateSession MCP command = %#v, want %q", got, "npx")
+	}
+	if _, ok := client.createConfigs[0].MCPServers["issues"]; ok {
+		t.Fatal("initial CreateSession unexpectedly included runtime-registered MCP server")
+	}
+
+	updated, err := runtime.RegisterMCPServer(context.Background(), "issues", config.MCPServerConfig{
+		Type:  "http",
+		URL:   "https://example.com/mcp",
+		Tools: []string{"list_issues"},
+	})
+	if err != nil {
+		t.Fatalf("RegisterMCPServer() error = %v", err)
+	}
+	if updated {
+		t.Fatal("RegisterMCPServer() updated = true, want false for first registration")
+	}
+
+	if _, err := runtime.EnsureSession(context.Background(), ExternalSessionKey{
+		Identifiers: map[string]string{"chat_id": "2", "transport": "telegram"},
+	}); err != nil {
+		t.Fatalf("EnsureSession(after register) error = %v", err)
+	}
+
+	if got := client.createConfigs[1].MCPServers["issues"]["url"]; got != "https://example.com/mcp" {
+		t.Fatalf("registered CreateSession MCP url = %#v, want %q", got, "https://example.com/mcp")
+	}
+	if _, ok := client.createConfigs[0].MCPServers["issues"]; ok {
+		t.Fatal("first CreateSession config mutated after runtime registration")
+	}
+}
+
+func TestRegisterMCPServerAffectsFutureResumeSessionConfigs(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeClient{}
+	runtime := NewRuntime(RuntimeConfig{
+		Session: SessionOptions{
+			Namespace:      "test-runtime",
+			WorkingDir:     t.TempDir(),
+			ClientName:     "control-tests",
+			ResumeSessions: true,
+		},
+	}, RuntimeHooks{})
+	runtime.client = client
+
+	updated, err := runtime.RegisterMCPServer(context.Background(), "issues", config.MCPServerConfig{
+		Type:  "http",
+		URL:   "https://example.com/mcp",
+		Tools: []string{"list_issues"},
+	})
+	if err != nil {
+		t.Fatalf("RegisterMCPServer() error = %v", err)
+	}
+	if updated {
+		t.Fatal("RegisterMCPServer() updated = true, want false")
+	}
+
+	if _, err := runtime.EnsureSession(context.Background(), ExternalSessionKey{
+		Identifiers: map[string]string{"chat_id": "99", "transport": "telegram"},
+	}); err != nil {
+		t.Fatalf("EnsureSession(resume) error = %v", err)
+	}
+
+	if len(client.resumeConfigs) != 1 {
+		t.Fatalf("resume config count = %d, want %d", len(client.resumeConfigs), 1)
+	}
+	if got := client.resumeConfigs[0].MCPServers["issues"]["url"]; got != "https://example.com/mcp" {
+		t.Fatalf("ResumeSession MCP url = %#v, want %q", got, "https://example.com/mcp")
+	}
+}
+
 type fakeClient struct {
-	startCalls atomic.Int32
-	startGate  chan struct{}
-	startedSig chan struct{}
+	startCalls    atomic.Int32
+	startGate     chan struct{}
+	startedSig    chan struct{}
+	createConfigs []*sdk.SessionConfig
+	resumeConfigs []*sdk.ResumeSessionConfig
 }
 
 func (f *fakeClient) Start(context.Context) error {
@@ -463,10 +565,34 @@ func (f *fakeClient) Stop() error {
 	return nil
 }
 
-func (f *fakeClient) CreateSession(context.Context, *sdk.SessionConfig) (*sdk.Session, error) {
-	return nil, errors.New("not implemented")
+func (f *fakeClient) CreateSession(_ context.Context, cfg *sdk.SessionConfig) (*sdk.Session, error) {
+	f.createConfigs = append(f.createConfigs, cloneSessionConfigForTest(cfg))
+	return &sdk.Session{SessionID: cfg.SessionID}, nil
 }
 
-func (f *fakeClient) ResumeSession(context.Context, string, *sdk.ResumeSessionConfig) (*sdk.Session, error) {
-	return nil, errors.New("not implemented")
+func (f *fakeClient) ResumeSession(_ context.Context, sessionID string, cfg *sdk.ResumeSessionConfig) (*sdk.Session, error) {
+	f.resumeConfigs = append(f.resumeConfigs, cloneResumeSessionConfigForTest(cfg))
+	return &sdk.Session{SessionID: sessionID}, nil
+}
+
+func cloneSessionConfigForTest(cfg *sdk.SessionConfig) *sdk.SessionConfig {
+	if cfg == nil {
+		return nil
+	}
+
+	cloned := *cfg
+	cloned.Tools = cloneTools(cfg.Tools)
+	cloned.MCPServers = cloneMCPServers(cfg.MCPServers)
+	return &cloned
+}
+
+func cloneResumeSessionConfigForTest(cfg *sdk.ResumeSessionConfig) *sdk.ResumeSessionConfig {
+	if cfg == nil {
+		return nil
+	}
+
+	cloned := *cfg
+	cloned.Tools = cloneTools(cfg.Tools)
+	cloned.MCPServers = cloneMCPServers(cfg.MCPServers)
+	return &cloned
 }
