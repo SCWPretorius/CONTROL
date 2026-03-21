@@ -41,6 +41,16 @@ type PrivilegedToolEvent struct {
 	OccurredAt time.Time         `json:"occurred_at"`
 }
 
+// MonitorCheckpoint stores app-owned state for monitor dedupe and cooldown logic.
+type MonitorCheckpoint struct {
+	CheckID           string    `json:"check_id"`
+	LastSeenCondition string    `json:"last_seen_condition"`
+	LastAlertAt       time.Time `json:"last_alert_at,omitempty"`
+	CooldownUntil     time.Time `json:"cooldown_until,omitempty"`
+	Fingerprint       string    `json:"fingerprint,omitempty"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
 // ChatSessionStore is the persistence boundary for app-owned chat/session metadata.
 type ChatSessionStore interface {
 	Get(context.Context, string, int64) (SessionBinding, bool, error)
@@ -58,4 +68,11 @@ type ChatSessionResetter interface {
 type PrivilegedToolEventStore interface {
 	Append(context.Context, PrivilegedToolEvent) error
 	Load(context.Context) ([]PrivilegedToolEvent, error)
+}
+
+// MonitorCheckpointStore persists per-check monitor state for future runners.
+type MonitorCheckpointStore interface {
+	GetMonitorCheckpoint(context.Context, string) (MonitorCheckpoint, bool, error)
+	PutMonitorCheckpoint(context.Context, MonitorCheckpoint) error
+	ListMonitorCheckpoints(context.Context) ([]MonitorCheckpoint, error)
 }

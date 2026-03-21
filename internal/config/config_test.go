@@ -70,6 +70,28 @@ func TestLoadFromLookupDefaultsAndNormalizesPaths(t *testing.T) {
 	if got, want := cfg.Tools.Runtime.MaxCommandOutputBytes, defaultToolMaxOutputBytes; got != want {
 		t.Fatalf("MaxCommandOutputBytes = %d, want %d", got, want)
 	}
+
+	if cfg.Monitor.Enabled {
+		t.Fatal("Monitor should be disabled by default")
+	}
+	if got, want := cfg.Monitor.Mode, defaultMonitorMode; got != want {
+		t.Fatalf("Monitor.Mode = %q, want %q", got, want)
+	}
+	if got, want := cfg.Monitor.Interval, defaultMonitorInterval; got != want {
+		t.Fatalf("Monitor.Interval = %s, want %s", got, want)
+	}
+	if got, want := cfg.Monitor.Jitter, defaultMonitorJitter; got != want {
+		t.Fatalf("Monitor.Jitter = %s, want %s", got, want)
+	}
+	if got, want := cfg.Monitor.Timeout, defaultMonitorTimeout; got != want {
+		t.Fatalf("Monitor.Timeout = %s, want %s", got, want)
+	}
+	if got, want := cfg.Monitor.Cooldown, defaultMonitorCooldown; got != want {
+		t.Fatalf("Monitor.Cooldown = %s, want %s", got, want)
+	}
+	if len(cfg.Monitor.HTTPChecks) != 0 {
+		t.Fatalf("Monitor.HTTPChecks len = %d, want 0", len(cfg.Monitor.HTTPChecks))
+	}
 }
 
 func TestLoadFromLookupLoadsToolingSettings(t *testing.T) {
@@ -439,6 +461,140 @@ func TestLoadFromLookupRejectsInvalidToolRuntimeKnobs(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("LoadFromLookup() error = nil, want invalid runtime knob error")
+	}
+}
+
+func TestLoadFromLookupLoadsMonitorConfig(t *testing.T) {
+	t.Parallel()
+
+	cwd := t.TempDir()
+	cfg, err := LoadFromLookup(
+		envLookup(map[string]string{
+			"TELEGRAM_BOT_TOKEN":         "token",
+			"TELEGRAM_ALLOWED_USER_ID":   "1",
+			"TELEGRAM_ALLOWED_CHAT_ID":   "2",
+			"COPILOT_CLI_PATH":           "copilot",
+			"ASSISTANT_MONITOR_ENABLED":  "true",
+			"ASSISTANT_MONITOR_MODE":     " analyze_then_notify ",
+			"ASSISTANT_MONITOR_INTERVAL": "2m",
+			"ASSISTANT_MONITOR_JITTER":   "15s",
+			"ASSISTANT_MONITOR_TIMEOUT":  "20s",
+			"ASSISTANT_MONITOR_COOLDOWN": "30m",
+			"ASSISTANT_MONITOR_HTTP_CHECKS_JSON": `[
+				{
+					"id": "api-health",
+					"url": "https://example.com/health",
+					"headers": {"Authorization": " Bearer token "},
+					"expected_status_codes": [200, 204]
+				},
+				{
+					"id": "ready-health",
+					"url": "https://example.com/ready",
+					"method": " head "
+				}
+			]`,
+		}),
+		func() (string, error) { return cwd, nil },
+	)
+	if err != nil {
+		t.Fatalf("LoadFromLookup() error = %v", err)
+	}
+
+	if !cfg.Monitor.Enabled {
+		t.Fatal("Monitor should be enabled when configured")
+	}
+	if got, want := cfg.Monitor.Mode, MonitorModeAnalyzeThenNotify; got != want {
+		t.Fatalf("Monitor.Mode = %q, want %q", got, want)
+	}
+	if !cfg.Monitor.UsesCopilotAnalysis() {
+		t.Fatal("Monitor should report Copilot analysis mode")
+	}
+	if got, want := cfg.Monitor.Interval, 2*time.Minute; got != want {
+		t.Fatalf("Monitor.Interval = %s, want %s", got, want)
+	}
+	if got, want := cfg.Monitor.Jitter, 15*time.Second; got != want {
+		t.Fatalf("Monitor.Jitter = %s, want %s", got, want)
+	}
+	if got, want := cfg.Monitor.Timeout, 20*time.Second; got != want {
+		t.Fatalf("Monitor.Timeout = %s, want %s", got, want)
+	}
+	if got, want := cfg.Monitor.Cooldown, 30*time.Minute; got != want {
+		t.Fatalf("Monitor.Cooldown = %s, want %s", got, want)
+	}
+	if got := len(cfg.Monitor.HTTPChecks); got != 2 {
+		t.Fatalf("Monitor.HTTPChecks len = %d, want 2", got)
+	}
+
+	first := cfg.Monitor.HTTPChecks[0]
+	if got, want := first.Headers["Authorization"], "Bearer token"; got != want {
+		t.Fatalf("first.Headers[Authorization] = %q, want %q", got, want)
+	}
+	if got, want := first.ExpectedStatusCodes, []int{200, 204}; !slices.Equal(got, want) {
+		t.Fatalf("first.ExpectedStatusCodes = %#v, want %#v", got, want)
+	}
+
+	second := cfg.Monitor.HTTPChecks[1]
+	if got, want := second.Method, "HEAD"; got != want {
+		t.Fatalf("second.Method = %q, want %q", got, want)
+	}
+	if got, want := second.ExpectedStatusCodes, []int{200}; !slices.Equal(got, want) {
+		t.Fatalf("second.ExpectedStatusCodes = %#v, want %#v", got, want)
+	}
+}
+
+func TestLoadFromLookupRejectsInvalidMonitorConfig(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]map[string]string{
+		"enabled without checks": {
+			"ASSISTANT_MONITOR_ENABLED": "true",
+		},
+		"invalid mode": {
+			"ASSISTANT_MONITOR_MODE": "fire-and-forget",
+		},
+		"negative jitter": {
+			"ASSISTANT_MONITOR_JITTER": "-1s",
+		},
+		"bad checks json": {
+			"ASSISTANT_MONITOR_HTTP_CHECKS_JSON": `[{`,
+		},
+		"bad check url": {
+			"ASSISTANT_MONITOR_HTTP_CHECKS_JSON": `[{"id":"api","url":"ftp://example.com/health"}]`,
+		},
+		"unknown check field": {
+			"ASSISTANT_MONITOR_HTTP_CHECKS_JSON": `[{"id":"api","url":"https://example.com/health","unexpected":true}]`,
+		},
+		"duplicate check id": {
+			"ASSISTANT_MONITOR_HTTP_CHECKS_JSON": `[
+				{"id":"api","url":"https://example.com/health"},
+				{"id":"api","url":"https://example.com/ready"}
+			]`,
+		},
+	}
+
+	for name, extra := range cases {
+		name, extra := name, extra
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			values := map[string]string{
+				"TELEGRAM_BOT_TOKEN":       "token",
+				"TELEGRAM_ALLOWED_USER_ID": "1",
+				"TELEGRAM_ALLOWED_CHAT_ID": "2",
+				"COPILOT_CLI_PATH":         "copilot",
+			}
+			for key, value := range extra {
+				values[key] = value
+			}
+
+			_, err := LoadFromLookup(
+				envLookup(values),
+				func() (string, error) { return t.TempDir(), nil },
+			)
+			if err == nil {
+				t.Fatalf("LoadFromLookup() error = nil, want monitor validation error for %q", name)
+			}
+		})
 	}
 }
 

@@ -3,6 +3,7 @@ package store
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,14 +19,16 @@ import (
 const (
 	sessionBindingsDirName = "sessions"
 	auditDirName           = "audit"
+	monitorDirName         = "monitors"
 	privilegedToolLogName  = "privileged-tool-events.ndjson"
 )
 
 // LocalFileStore persists app-owned state as local JSON and NDJSON files.
 type LocalFileStore struct {
-	rootDir     string
-	sessionsDir string
-	auditDir    string
+	rootDir         string
+	sessionsDir     string
+	auditDir        string
+	monitorStateDir string
 
 	mu sync.RWMutex
 }
@@ -34,6 +37,7 @@ var (
 	_ ChatSessionStore         = (*LocalFileStore)(nil)
 	_ ChatSessionResetter      = (*LocalFileStore)(nil)
 	_ PrivilegedToolEventStore = (*LocalFileStore)(nil)
+	_ MonitorCheckpointStore   = (*LocalFileStore)(nil)
 )
 
 // NewLocalFileStore creates a file-backed store rooted at the configured storage dir.
@@ -48,12 +52,13 @@ func NewLocalFileStore(rootDir string) (*LocalFileStore, error) {
 	}
 
 	store := &LocalFileStore{
-		rootDir:     filepath.Clean(absRoot),
-		sessionsDir: filepath.Join(filepath.Clean(absRoot), sessionBindingsDirName),
-		auditDir:    filepath.Join(filepath.Clean(absRoot), auditDirName),
+		rootDir:         filepath.Clean(absRoot),
+		sessionsDir:     filepath.Join(filepath.Clean(absRoot), sessionBindingsDirName),
+		auditDir:        filepath.Join(filepath.Clean(absRoot), auditDirName),
+		monitorStateDir: filepath.Join(filepath.Clean(absRoot), monitorDirName),
 	}
 
-	for _, dir := range []string{store.rootDir, store.sessionsDir, store.auditDir} {
+	for _, dir := range []string{store.rootDir, store.sessionsDir, store.auditDir, store.monitorStateDir} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("create store dir %q: %w", dir, err)
 		}
@@ -283,12 +288,87 @@ func (s *LocalFileStore) Load(ctx context.Context) ([]PrivilegedToolEvent, error
 	return events, nil
 }
 
+// GetMonitorCheckpoint returns the persisted checkpoint for a monitor check, if one exists.
+func (s *LocalFileStore) GetMonitorCheckpoint(ctx context.Context, checkID string) (MonitorCheckpoint, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return MonitorCheckpoint{}, false, err
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.getMonitorCheckpointLocked(checkID)
+}
+
+// PutMonitorCheckpoint writes monitor state as a human-readable JSON document.
+func (s *LocalFileStore) PutMonitorCheckpoint(ctx context.Context, checkpoint MonitorCheckpoint) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.writeMonitorCheckpointLocked(checkpoint); err != nil {
+		return err
+	}
+	return ctx.Err()
+}
+
+// ListMonitorCheckpoints loads every persisted monitor checkpoint from disk.
+func (s *LocalFileStore) ListMonitorCheckpoints(ctx context.Context) ([]MonitorCheckpoint, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	entries, err := os.ReadDir(s.monitorStateDir)
+	if err != nil {
+		return nil, fmt.Errorf("read monitor state dir %q: %w", s.monitorStateDir, err)
+	}
+
+	var checkpoints []MonitorCheckpoint
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+
+		payload, err := os.ReadFile(filepath.Join(s.monitorStateDir, entry.Name()))
+		if err != nil {
+			return nil, fmt.Errorf("read monitor checkpoint %q: %w", entry.Name(), err)
+		}
+
+		var checkpoint MonitorCheckpoint
+		if err := json.Unmarshal(payload, &checkpoint); err != nil {
+			return nil, fmt.Errorf("decode monitor checkpoint %q: %w", entry.Name(), err)
+		}
+
+		checkpoints = append(checkpoints, checkpoint)
+	}
+
+	sort.Slice(checkpoints, func(i, j int) bool {
+		return checkpoints[i].CheckID < checkpoints[j].CheckID
+	})
+
+	return checkpoints, nil
+}
+
 func (s *LocalFileStore) sessionPath(transport string, chatID int64) string {
 	return filepath.Join(s.sessionsDir, fmt.Sprintf("chat-%s-%d.json", sanitizeTransportKey(transport), chatID))
 }
 
 func (s *LocalFileStore) privilegedToolLogPath() string {
 	return filepath.Join(s.auditDir, privilegedToolLogName)
+}
+
+func (s *LocalFileStore) monitorCheckpointPath(checkID string) string {
+	encodedID := base64.RawURLEncoding.EncodeToString([]byte(strings.TrimSpace(checkID)))
+	return filepath.Join(s.monitorStateDir, fmt.Sprintf("check-%s.json", encodedID))
 }
 
 func (s *LocalFileStore) writeSessionBindingLocked(binding SessionBinding, allowEmptySessionID bool) error {
@@ -346,15 +426,19 @@ func isZeroMetadata(metadata TelegramChatMetadata) bool {
 }
 
 func sanitizeTransportKey(transport string) string {
-	transport = strings.TrimSpace(strings.ToLower(transport))
-	if transport == "" {
+	return sanitizeFileKey(strings.ToLower(transport))
+}
+
+func sanitizeFileKey(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
 		return "unknown"
 	}
 
 	var builder strings.Builder
-	builder.Grow(len(transport))
+	builder.Grow(len(value))
 	lastDash := false
-	for _, r := range transport {
+	for _, r := range value {
 		switch {
 		case unicode.IsLetter(r), unicode.IsDigit(r):
 			builder.WriteRune(r)
@@ -375,6 +459,70 @@ func sanitizeTransportKey(transport string) string {
 		return "unknown"
 	}
 	return result
+}
+
+func (s *LocalFileStore) getMonitorCheckpointLocked(checkID string) (MonitorCheckpoint, bool, error) {
+	path := s.monitorCheckpointPath(checkID)
+	payload, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return MonitorCheckpoint{}, false, nil
+	}
+	if err != nil {
+		return MonitorCheckpoint{}, false, fmt.Errorf("read monitor checkpoint %q: %w", path, err)
+	}
+
+	var checkpoint MonitorCheckpoint
+	if err := json.Unmarshal(payload, &checkpoint); err != nil {
+		return MonitorCheckpoint{}, false, fmt.Errorf("decode monitor checkpoint %q: %w", path, err)
+	}
+
+	return checkpoint, true, nil
+}
+
+func (s *LocalFileStore) writeMonitorCheckpointLocked(checkpoint MonitorCheckpoint) error {
+	checkID, err := normalizeMonitorCheckpoint(&checkpoint)
+	if err != nil {
+		return err
+	}
+
+	if checkpoint.UpdatedAt.IsZero() {
+		checkpoint.UpdatedAt = time.Now().UTC()
+	}
+
+	payload, err := json.MarshalIndent(checkpoint, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode monitor checkpoint: %w", err)
+	}
+	payload = append(payload, '\n')
+
+	path := s.monitorCheckpointPath(checkID)
+	if err := writeFileAtomic(path, payload, 0o600); err != nil {
+		return fmt.Errorf("write monitor checkpoint %q: %w", path, err)
+	}
+
+	return nil
+}
+
+func normalizeMonitorCheckpoint(checkpoint *MonitorCheckpoint) (string, error) {
+	if checkpoint == nil {
+		return "", errors.New("monitor checkpoint is required")
+	}
+
+	checkpoint.CheckID = strings.TrimSpace(checkpoint.CheckID)
+	checkpoint.LastSeenCondition = strings.TrimSpace(checkpoint.LastSeenCondition)
+	checkpoint.Fingerprint = strings.TrimSpace(checkpoint.Fingerprint)
+
+	if checkpoint.CheckID == "" {
+		return "", errors.New("monitor checkpoint check id is required")
+	}
+	if checkpoint.LastSeenCondition == "" {
+		return "", errors.New("monitor checkpoint last seen condition is required")
+	}
+	if !checkpoint.LastAlertAt.IsZero() && !checkpoint.CooldownUntil.IsZero() && checkpoint.CooldownUntil.Before(checkpoint.LastAlertAt) {
+		return "", errors.New("monitor checkpoint cooldown until must not be before last alert at")
+	}
+
+	return checkpoint.CheckID, nil
 }
 
 func writeFileAtomic(path string, payload []byte, mode os.FileMode) error {
