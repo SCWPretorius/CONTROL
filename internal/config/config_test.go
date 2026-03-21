@@ -558,6 +558,9 @@ func TestLoadFromLookupRejectsInvalidMonitorConfig(t *testing.T) {
 		"bad checks json": {
 			"ASSISTANT_MONITOR_HTTP_CHECKS_JSON": `[{`,
 		},
+		"trailing checks json": {
+			"ASSISTANT_MONITOR_HTTP_CHECKS_JSON": `[] {}`,
+		},
 		"bad check url": {
 			"ASSISTANT_MONITOR_HTTP_CHECKS_JSON": `[{"id":"api","url":"ftp://example.com/health"}]`,
 		},

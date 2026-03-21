@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -588,6 +589,9 @@ func optionalMonitorHTTPChecksEnv(lookup func(string) (string, bool), key string
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&checks); err != nil {
 		return nil, fmt.Errorf("%s must match the supported monitor HTTP check schema: %w", key, err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("%s must contain exactly one JSON array value", key)
 	}
 
 	return checks, nil
