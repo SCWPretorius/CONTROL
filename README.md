@@ -60,6 +60,13 @@ internal/tools        Google Workspace and privileged local tools
 | `ASSISTANT_TOOL_HTTP_TIMEOUT` | `30s` |
 | `ASSISTANT_TOOL_SHELL_TIMEOUT` | `30s` |
 | `ASSISTANT_TOOL_MAX_OUTPUT_BYTES` | `65536` |
+| `ASSISTANT_MONITOR_ENABLED` | `false` |
+| `ASSISTANT_MONITOR_MODE` | `notify_only` |
+| `ASSISTANT_MONITOR_INTERVAL` | `1m` |
+| `ASSISTANT_MONITOR_JITTER` | `10s` |
+| `ASSISTANT_MONITOR_TIMEOUT` | `10s` |
+| `ASSISTANT_MONITOR_COOLDOWN` | `15m` |
+| `ASSISTANT_MONITOR_HTTP_CHECKS_JSON` | empty; JSON array of HTTP checks required when monitoring is enabled |
 
 ## Shared tooling configuration
 
@@ -108,6 +115,9 @@ $env:ASSISTANT_TOOL_MCP_ADMIN_BEARER_TOKEN = "replace-with-a-long-random-token"
 $env:ASSISTANT_TOOL_ALLOWED_WORKSPACE_ROOTS = "C:\Users\you\Documents\Repos\CONTROL"
 $env:ASSISTANT_TOOL_WRITABLE_ROOTS = "C:\Users\you\Documents\Repos\CONTROL\var\runtime;C:\Users\you\Documents\Repos\CONTROL\var\storage"
 $env:ASSISTANT_TOOL_SHELL_AUTO_APPROVE = "git status --short,go test ./internal/config"
+$env:ASSISTANT_MONITOR_ENABLED = "true"
+$env:ASSISTANT_MONITOR_MODE = "notify_only"
+$env:ASSISTANT_MONITOR_HTTP_CHECKS_JSON = '[{"id":"api-health","url":"https://example.com/health","method":"GET","headers":{"Authorization":"Bearer replace-me"},"expected_status_codes":[200]}]'
 go run ./cmd/assistant
 ```
 
@@ -121,6 +131,7 @@ Expected result with valid runtime credentials:
 - Google Workspace tools are registered only when both OAuth app config and `GOOGLE_OAUTH_ACCESS_TOKEN` are set
 - configured MCP servers are attached to every Copilot session create/resume request
 - when the local MCP admin endpoint is enabled, operators can register additional MCP servers for future sessions via `POST /admin/mcp/servers`
+- when monitoring is enabled, configured HTTP checks run on their own schedule and send direct Telegram alerts to the allowed chat on unhealthy conditions
 - the process logs startup/runtime activity and continues serving until stopped
 
 Runtime MCP registration example:
@@ -149,6 +160,41 @@ Runtime MCP registration behavior:
 - Registering a new server name returns `201 Created`; posting an existing name replaces that server definition and returns `200 OK`.
 - Invalid payloads or failed validation are rejected with `400 Bad Request`; missing or incorrect bearer tokens are rejected with `401 Unauthorized`.
 - New registrations apply to future Copilot session create/resume requests only. If an existing Telegram chat should pick up the new MCP server immediately, run `/reset` for that chat before the next prompt.
+
+## Monitoring (first slice)
+
+The first monitoring slice is a **notify-only** HTTP checker. It polls configured HTTP endpoints on a timer, persists per-check checkpoint state under `<storage dir>/monitors`, and sends direct outbound Telegram alerts to `TELEGRAM_ALLOWED_CHAT_ID` when a check enters or remains in an unhealthy condition after cooldown.
+
+Current slice behavior:
+
+- `ASSISTANT_MONITOR_MODE=notify_only` is the only implemented runtime mode. Other mode names are reserved in config validation but are not wired into the monitor runner yet.
+- Checks come from `ASSISTANT_MONITOR_HTTP_CHECKS_JSON`, a JSON array. Each check requires an `id` and absolute `url`; `method` defaults to `GET`; `headers` are optional; `expected_status_codes` defaults to `[200]`.
+- Each alert includes the check ID, monitor mode, HTTP method, URL, detected condition, detail text, and UTC detection timestamp.
+- Alerts are sent directly through Telegram to the configured allowed chat. They do not depend on an inbound Telegram message or an active Copilot session.
+- Cooldown/dedupe is checkpoint-driven: repeated identical failures are suppressed until the cooldown expires, while a changed condition fingerprint alerts immediately and a healthy result clears the stored unhealthy fingerprint/cooldown state.
+
+HTTP check JSON example:
+
+```json
+[
+  {
+    "id": "api-health",
+    "url": "https://example.com/health",
+    "method": "GET",
+    "headers": {
+      "Authorization": "Bearer replace-me"
+    },
+    "expected_status_codes": [200]
+  }
+]
+```
+
+Explicitly not implemented yet:
+
+- `analyze_then_notify` monitor actions
+- any automatic remediation or auto-fix path
+- non-HTTP monitor sources such as log/file, process/resource, or external API checks beyond direct HTTP requests
+- delivery retries, escalation policies beyond cooldown, or monitor health telemetry
 
 ## Verification
 
