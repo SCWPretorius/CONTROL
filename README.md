@@ -67,7 +67,8 @@ internal/tools        Google Workspace and privileged local tools
 | `ASSISTANT_MONITOR_JITTER` | `10s` |
 | `ASSISTANT_MONITOR_TIMEOUT` | `10s` |
 | `ASSISTANT_MONITOR_COOLDOWN` | `15m` |
-| `ASSISTANT_MONITOR_HTTP_CHECKS_JSON` | empty; JSON array of HTTP checks required when monitoring is enabled |
+| `ASSISTANT_MONITOR_HTTP_CHECKS_JSON` | empty; optional JSON array of HTTP monitor checks |
+| `ASSISTANT_MONITOR_GMAIL_CHECKS_JSON` | empty; optional JSON array of Gmail monitor checks |
 
 ## Shared tooling configuration
 
@@ -134,6 +135,7 @@ $env:ASSISTANT_TOOL_SHELL_AUTO_APPROVE = "git status --short,go test ./internal/
 $env:ASSISTANT_MONITOR_ENABLED = "true"
 $env:ASSISTANT_MONITOR_MODE = "notify_only"
 $env:ASSISTANT_MONITOR_HTTP_CHECKS_JSON = '[{"id":"api-health","url":"https://example.com/health","method":"GET","headers":{"Authorization":"Bearer replace-me"},"expected_status_codes":[200]}]'
+$env:ASSISTANT_MONITOR_GMAIL_CHECKS_JSON = '[{"id":"gmail-invoices","label_ids":["INBOX"],"subject_contains":"invoice","max_results":10}]'
 go run ./cmd/assistant
 ```
 
@@ -148,7 +150,7 @@ Expected result with valid runtime credentials:
 - Google Workspace tools are registered only when both OAuth app config and `GOOGLE_OAUTH_ACCESS_TOKEN` are set
 - configured MCP servers are attached to every Copilot session create/resume request
 - when the local MCP admin endpoint is enabled, operators can register additional MCP servers for future sessions via `POST /admin/mcp/servers`
-- when monitoring is enabled, configured HTTP checks run on their own schedule and send direct Telegram alerts to the allowed chat on unhealthy conditions
+- when monitoring is enabled, configured HTTP and/or Gmail checks run on their own schedule and send direct Telegram alerts to the allowed chat for matched incidents
 - the process logs startup/runtime activity and continues serving until stopped
 
 Runtime MCP registration example:
@@ -180,15 +182,17 @@ Runtime MCP registration behavior:
 
 ## Monitoring (first slice)
 
-The first monitoring slice is a **notify-only** HTTP checker. It polls configured HTTP endpoints on a timer, persists per-check checkpoint state under `<storage dir>/monitors`, and sends direct outbound Telegram alerts to `TELEGRAM_ALLOWED_CHAT_ID` when a check enters or remains in an unhealthy condition after cooldown.
+The first monitoring slice is a **notify-only** checker. It supports HTTP health checks and Gmail polling, persists per-check checkpoint state under `<storage dir>/monitors`, and sends direct outbound Telegram alerts to `TELEGRAM_ALLOWED_CHAT_ID`.
 
 Current slice behavior:
 
 - `ASSISTANT_MONITOR_MODE=notify_only` is the only implemented runtime mode. Other mode names are reserved in config validation but are not wired into the monitor runner yet.
-- Checks come from `ASSISTANT_MONITOR_HTTP_CHECKS_JSON`, a JSON array. Each check requires an `id` and absolute `url`; `method` defaults to `GET`; `headers` are optional; `expected_status_codes` defaults to `[200]`.
-- Each alert includes the check ID, monitor mode, HTTP method, URL, detected condition, detail text, and UTC detection timestamp.
+- HTTP checks come from `ASSISTANT_MONITOR_HTTP_CHECKS_JSON`, a JSON array. Each check requires an `id` and absolute `url`; `method` defaults to `GET`; `headers` are optional; `expected_status_codes` defaults to `[200]`.
+- Gmail checks come from `ASSISTANT_MONITOR_GMAIL_CHECKS_JSON`, a JSON array. Each check requires an `id` plus at least one of `label_ids`, `subject_contains`, or `subject_equals`; `max_results` defaults to `10`.
+- HTTP alerts include the check ID, monitor mode, HTTP method, URL, detected condition, detail text, and UTC detection timestamp.
+- Gmail matches download attachments under `<storage dir>/gmail-attachments/`, advance a per-check processed-message cursor in checkpoint metadata, and send Telegram alerts that include the matched message subject/sender and saved attachment paths.
 - Alerts are sent directly through Telegram to the configured allowed chat. They do not depend on an inbound Telegram message or an active Copilot session.
-- Cooldown/dedupe is checkpoint-driven: repeated identical failures are suppressed until the cooldown expires, while a changed condition fingerprint alerts immediately and a healthy result clears the stored unhealthy fingerprint/cooldown state.
+- Cooldown/dedupe is checkpoint-driven: repeated identical HTTP failures are suppressed until the cooldown expires, while Gmail checks advance a processed-message cursor so the same matching message is not downloaded or alerted twice.
 
 HTTP check JSON example:
 
@@ -206,11 +210,28 @@ HTTP check JSON example:
 ]
 ```
 
+Gmail check JSON example:
+
+```json
+[
+  {
+    "id": "gmail-invoices",
+    "label_ids": ["INBOX", "Label_123"],
+    "subject_contains": "invoice",
+    "max_results": 10
+  },
+  {
+    "id": "gmail-nightly-report",
+    "subject_equals": "Nightly report"
+  }
+]
+```
+
 Explicitly not implemented yet:
 
 - `analyze_then_notify` monitor actions
 - any automatic remediation or auto-fix path
-- non-HTTP monitor sources such as log/file, process/resource, or external API checks beyond direct HTTP requests
+- monitor sources beyond HTTP and Gmail, such as log/file, process/resource, or other external APIs
 - delivery retries, escalation policies beyond cooldown, or monitor health telemetry
 
 ## Verification

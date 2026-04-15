@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/SCWPretorius/CONTROL/internal/config"
 	"github.com/SCWPretorius/CONTROL/internal/store"
+	"github.com/SCWPretorius/CONTROL/internal/tools/googleworkspace/gmail"
 )
 
 func TestHTTPMonitorRunnerExecuteHTTPCheckDedupesWithinCooldown(t *testing.T) {
@@ -449,6 +452,163 @@ func TestNewMonitorRunnerRejectsUnsupportedMode(t *testing.T) {
 	}
 }
 
+func TestGmailMonitorRunnerExecuteGmailCheckDownloadsAttachmentsAndAlerts(t *testing.T) {
+	t.Parallel()
+
+	checkStore := &memoryMonitorCheckpointStore{}
+	alerts := &stubMonitorAlertSender{}
+	tempDir := t.TempDir()
+	now := time.Date(2025, time.January, 1, 12, 5, 0, 0, time.UTC)
+	client := &stubMonitorGmailClient{
+		listResponse: gmail.ListMessagesResponse{
+			Messages: []gmail.MessageReference{
+				{ID: "msg-2"},
+				{ID: "msg-1"},
+			},
+		},
+		messages: map[string]gmail.Message{
+			"msg-1": {
+				ID:           "msg-1",
+				InternalDate: now.Add(-time.Minute),
+				Headers: map[string]string{
+					"Subject": "Invoice 1001",
+					"From":    "Billing <billing@example.com>",
+				},
+				Attachments: []gmail.Attachment{
+					{Filename: "invoice.pdf", AttachmentID: "att-1"},
+				},
+			},
+			"msg-2": {
+				ID:           "msg-2",
+				InternalDate: now,
+				Headers: map[string]string{
+					"Subject": "No match",
+					"From":    "Other <other@example.com>",
+				},
+			},
+		},
+		attachments: map[string][]byte{
+			"msg-1/att-1": []byte("pdf-bytes"),
+		},
+	}
+	runner := &gmailMonitorRunner{
+		logger:      defaultLogger(nil),
+		config:      config.MonitorConfig{Mode: config.MonitorModeNotifyOnly, Timeout: 50 * time.Millisecond, Cooldown: time.Minute},
+		checkpoints: checkStore,
+		alerts:      alerts,
+		client:      client,
+		storageDir:  tempDir,
+		now:         func() time.Time { return now },
+		jitter:      func(time.Duration) time.Duration { return 0 },
+	}
+	check := config.MonitorGmailCheckConfig{
+		ID:              "gmail-payments",
+		LabelIDs:        []string{"INBOX"},
+		SubjectContains: "invoice",
+		MaxResults:      10,
+	}
+
+	if err := runner.executeGmailCheck(context.Background(), check); err != nil {
+		t.Fatalf("executeGmailCheck() error = %v", err)
+	}
+
+	if got := len(alerts.messages); got != 1 {
+		t.Fatalf("alert count = %d, want 1", got)
+	}
+	if !strings.Contains(alerts.messages[0], "matched 1 Gmail message(s); downloaded 1 attachment(s)") {
+		t.Fatalf("alert = %q, want matched/downloaded summary", alerts.messages[0])
+	}
+
+	checkpoint, ok, err := checkStore.GetMonitorCheckpoint(context.Background(), check.ID)
+	if err != nil {
+		t.Fatalf("GetMonitorCheckpoint() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("checkpoint not persisted")
+	}
+	if got, want := checkpoint.LastSeenCondition, "matched"; got != want {
+		t.Fatalf("LastSeenCondition = %q, want %q", got, want)
+	}
+	if got, want := checkpoint.Metadata[monitorMetadataGmailLatestDateMS], "1735733100000"; got != want {
+		t.Fatalf("metadata latest date = %q, want %q", got, want)
+	}
+	if got, want := checkpoint.Metadata[monitorMetadataGmailLatestMessageIDs], "msg-2"; got != want {
+		t.Fatalf("metadata latest ids = %q, want %q", got, want)
+	}
+
+	files, err := filepath.Glob(filepath.Join(tempDir, "gmail-attachments", "*", "*", "*"))
+	if err != nil {
+		t.Fatalf("Glob() error = %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("attachment file count = %d, want 1", len(files))
+	}
+	content, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", files[0], err)
+	}
+	if got, want := string(content), "pdf-bytes"; got != want {
+		t.Fatalf("attachment content = %q, want %q", got, want)
+	}
+}
+
+func TestGmailMonitorRunnerExecuteGmailCheckSkipsPreviouslyProcessedMessages(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2025, time.January, 1, 12, 5, 0, 0, time.UTC)
+	checkStore := &memoryMonitorCheckpointStore{}
+	alerts := &stubMonitorAlertSender{}
+	client := &stubMonitorGmailClient{
+		listResponse: gmail.ListMessagesResponse{
+			Messages: []gmail.MessageReference{{ID: "msg-1"}},
+		},
+		messages: map[string]gmail.Message{
+			"msg-1": {
+				ID:           "msg-1",
+				InternalDate: now,
+				Headers: map[string]string{
+					"Subject": "Invoice 1001",
+				},
+				Attachments: []gmail.Attachment{
+					{Filename: "invoice.pdf", AttachmentID: "att-1"},
+				},
+			},
+		},
+		attachments: map[string][]byte{
+			"msg-1/att-1": []byte("pdf-bytes"),
+		},
+	}
+	runner := &gmailMonitorRunner{
+		logger:      defaultLogger(nil),
+		config:      config.MonitorConfig{Mode: config.MonitorModeNotifyOnly, Timeout: 50 * time.Millisecond, Cooldown: time.Minute},
+		checkpoints: checkStore,
+		alerts:      alerts,
+		client:      client,
+		storageDir:  t.TempDir(),
+		now:         func() time.Time { return now },
+		jitter:      func(time.Duration) time.Duration { return 0 },
+	}
+	check := config.MonitorGmailCheckConfig{
+		ID:              "gmail-payments",
+		SubjectContains: "invoice",
+		MaxResults:      10,
+	}
+
+	if err := runner.executeGmailCheck(context.Background(), check); err != nil {
+		t.Fatalf("executeGmailCheck(first) error = %v", err)
+	}
+	if err := runner.executeGmailCheck(context.Background(), check); err != nil {
+		t.Fatalf("executeGmailCheck(second) error = %v", err)
+	}
+
+	if got := len(alerts.messages); got != 1 {
+		t.Fatalf("alert count = %d, want 1", got)
+	}
+	if got := client.downloadCalls; got != 1 {
+		t.Fatalf("downloadCalls = %d, want 1", got)
+	}
+}
+
 type staticHTTPDoer struct {
 	response *http.Response
 	err      error
@@ -528,4 +688,42 @@ func (s *memoryMonitorCheckpointStore) ListMonitorCheckpoints(_ context.Context)
 		checkpoints = append(checkpoints, checkpoint)
 	}
 	return checkpoints, nil
+}
+
+type stubMonitorGmailClient struct {
+	listResponse  gmail.ListMessagesResponse
+	listErr       error
+	messages      map[string]gmail.Message
+	getErr        error
+	attachments   map[string][]byte
+	downloadErr   error
+	downloadCalls int
+}
+
+func (s *stubMonitorGmailClient) ListMessages(context.Context, gmail.ListMessagesRequest) (gmail.ListMessagesResponse, error) {
+	return s.listResponse, s.listErr
+}
+
+func (s *stubMonitorGmailClient) GetMessage(_ context.Context, request gmail.GetMessageRequest) (gmail.Message, error) {
+	if s.getErr != nil {
+		return gmail.Message{}, s.getErr
+	}
+	message, ok := s.messages[request.MessageID]
+	if !ok {
+		return gmail.Message{}, errors.New("message not found")
+	}
+	return message, nil
+}
+
+func (s *stubMonitorGmailClient) DownloadAttachment(_ context.Context, request gmail.DownloadAttachmentRequest) ([]byte, error) {
+	if s.downloadErr != nil {
+		return nil, s.downloadErr
+	}
+	s.downloadCalls++
+	key := request.MessageID + "/" + request.Attachment.AttachmentID
+	content, ok := s.attachments[key]
+	if !ok {
+		return nil, errors.New("attachment not found")
+	}
+	return append([]byte(nil), content...), nil
 }

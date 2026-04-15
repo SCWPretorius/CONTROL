@@ -74,6 +74,7 @@ func TestGetMessageParsesHeadersBodiesAndInternalDate(t *testing.T) {
 
 	plainText := base64.RawURLEncoding.EncodeToString([]byte("hello from plain text"))
 	htmlText := base64.RawURLEncoding.EncodeToString([]byte("<p>hello from html</p>"))
+	attachmentData := base64.RawURLEncoding.EncodeToString([]byte("PDF!"))
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if got, want := request.URL.Path, "/users/me/messages/msg-123"; got != want {
@@ -99,7 +100,8 @@ func TestGetMessageParsesHeadersBodiesAndInternalDate(t *testing.T) {
 				],
 				"parts":[
 					{"mimeType":"text/plain","body":{"data":"` + plainText + `"}},
-					{"mimeType":"text/html","body":{"data":"` + htmlText + `"}}
+					{"mimeType":"text/html","body":{"data":"` + htmlText + `"}},
+					{"partId":"3","mimeType":"application/pdf","filename":"report.pdf","body":{"attachmentId":"att-1","data":"` + attachmentData + `","size":4}}
 				]
 			}
 		}`))
@@ -124,10 +126,86 @@ func TestGetMessageParsesHeadersBodiesAndInternalDate(t *testing.T) {
 	if got, want := message.HTMLBody, "<p>hello from html</p>"; got != want {
 		t.Fatalf("HTMLBody = %q, want %q", got, want)
 	}
+	if got, want := len(message.Attachments), 1; got != want {
+		t.Fatalf("len(Attachments) = %d, want %d", got, want)
+	}
+	if got, want := message.Attachments[0].Filename, "report.pdf"; got != want {
+		t.Fatalf("Attachments[0].Filename = %q, want %q", got, want)
+	}
+	if got, want := message.Attachments[0].AttachmentID, "att-1"; got != want {
+		t.Fatalf("Attachments[0].AttachmentID = %q, want %q", got, want)
+	}
 
 	wantTime := time.Date(2025, time.January, 1, 12, 0, 0, 0, time.UTC)
 	if got := message.InternalDate; !got.Equal(wantTime) {
 		t.Fatalf("InternalDate = %v, want %v", got, wantTime)
+	}
+}
+
+func TestDownloadAttachmentFetchesAttachmentBody(t *testing.T) {
+	t.Parallel()
+
+	attachmentData := base64.RawURLEncoding.EncodeToString([]byte("file-bytes"))
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if got, want := request.URL.Path, "/users/me/messages/msg-123/attachments/att-9"; got != want {
+			t.Fatalf("path = %q, want %q", got, want)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"data":"` + attachmentData + `","size":10}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server.URL)
+	content, err := client.DownloadAttachment(context.Background(), DownloadAttachmentRequest{
+		MessageID:  "msg-123",
+		Attachment: Attachment{AttachmentID: "att-9"},
+	})
+	if err != nil {
+		t.Fatalf("DownloadAttachment() error = %v", err)
+	}
+	if got, want := string(content), "file-bytes"; got != want {
+		t.Fatalf("content = %q, want %q", got, want)
+	}
+}
+
+func TestDownloadAttachmentUsesInlineAttachmentData(t *testing.T) {
+	t.Parallel()
+
+	attachmentData := base64.RawURLEncoding.EncodeToString([]byte("inline"))
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{
+			"id":"msg-inline",
+			"threadId":"thread-1",
+			"labelIds":["INBOX"],
+			"payload":{
+				"mimeType":"multipart/mixed",
+				"parts":[
+					{"partId":"2","mimeType":"application/octet-stream","filename":"payload.bin","body":{"data":"` + attachmentData + `","size":6}}
+				]
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server.URL)
+	message, err := client.GetMessage(context.Background(), GetMessageRequest{MessageID: "msg-inline"})
+	if err != nil {
+		t.Fatalf("GetMessage() error = %v", err)
+	}
+	if got, want := len(message.Attachments), 1; got != want {
+		t.Fatalf("len(Attachments) = %d, want %d", got, want)
+	}
+
+	content, err := client.DownloadAttachment(context.Background(), DownloadAttachmentRequest{
+		MessageID:  message.ID,
+		Attachment: message.Attachments[0],
+	})
+	if err != nil {
+		t.Fatalf("DownloadAttachment() error = %v", err)
+	}
+	if got, want := string(content), "inline"; got != want {
+		t.Fatalf("content = %q, want %q", got, want)
 	}
 }
 

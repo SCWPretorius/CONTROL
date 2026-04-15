@@ -316,6 +316,9 @@ func TestLocalFileStoreMonitorCheckpointRoundTrip(t *testing.T) {
 		LastAlertAt:       time.Date(2025, time.January, 1, 12, 0, 0, 0, time.UTC),
 		CooldownUntil:     time.Date(2025, time.January, 1, 12, 15, 0, 0, time.UTC),
 		Fingerprint:       "fingerprint-123",
+		Metadata: map[string]string{
+			"cursor": "msg-123",
+		},
 	}
 
 	if err := store.PutMonitorCheckpoint(context.Background(), want); err != nil {

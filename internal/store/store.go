@@ -43,12 +43,13 @@ type PrivilegedToolEvent struct {
 
 // MonitorCheckpoint stores app-owned state for monitor dedupe and cooldown logic.
 type MonitorCheckpoint struct {
-	CheckID           string    `json:"check_id"`
-	LastSeenCondition string    `json:"last_seen_condition"`
-	LastAlertAt       time.Time `json:"last_alert_at,omitempty"`
-	CooldownUntil     time.Time `json:"cooldown_until,omitempty"`
-	Fingerprint       string    `json:"fingerprint,omitempty"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	CheckID           string            `json:"check_id"`
+	LastSeenCondition string            `json:"last_seen_condition"`
+	LastAlertAt       time.Time         `json:"last_alert_at,omitempty"`
+	CooldownUntil     time.Time         `json:"cooldown_until,omitempty"`
+	Fingerprint       string            `json:"fingerprint,omitempty"`
+	Metadata          map[string]string `json:"metadata,omitempty"`
+	UpdatedAt         time.Time         `json:"updated_at"`
 }
 
 // MonitorEvent is an append-only monitor audit record for incidents, actions, and

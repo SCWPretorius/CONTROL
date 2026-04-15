@@ -206,17 +206,18 @@ const (
 )
 
 type MonitorConfig struct {
-	Enabled    bool
-	Mode       string
-	Interval   time.Duration
-	Jitter     time.Duration
-	Timeout    time.Duration
-	Cooldown   time.Duration
-	HTTPChecks []MonitorHTTPCheckConfig
+	Enabled     bool
+	Mode        string
+	Interval    time.Duration
+	Jitter      time.Duration
+	Timeout     time.Duration
+	Cooldown    time.Duration
+	HTTPChecks  []MonitorHTTPCheckConfig
+	GmailChecks []MonitorGmailCheckConfig
 }
 
 func (c MonitorConfig) Configured() bool {
-	return c.Enabled || len(c.HTTPChecks) > 0
+	return c.Enabled || len(c.HTTPChecks) > 0 || len(c.GmailChecks) > 0
 }
 
 func (c MonitorConfig) UsesCopilotAnalysis() bool {
@@ -229,6 +230,15 @@ type MonitorHTTPCheckConfig struct {
 	Method              string            `json:"method,omitempty"`
 	Headers             map[string]string `json:"headers,omitempty"`
 	ExpectedStatusCodes []int             `json:"expected_status_codes,omitempty"`
+}
+
+type MonitorGmailCheckConfig struct {
+	ID               string   `json:"id"`
+	LabelIDs         []string `json:"label_ids,omitempty"`
+	SubjectContains  string   `json:"subject_contains,omitempty"`
+	SubjectEquals    string   `json:"subject_equals,omitempty"`
+	IncludeSpamTrash bool     `json:"include_spam_trash,omitempty"`
+	MaxResults       int      `json:"max_results,omitempty"`
 }
 
 // Load reads configuration from environment variables and resolves paths.
@@ -424,6 +434,10 @@ func LoadFromLookup(lookup func(string) (string, bool), getwd func() (string, er
 	}
 
 	cfg.Monitor.HTTPChecks, err = optionalMonitorHTTPChecksEnv(lookup, "ASSISTANT_MONITOR_HTTP_CHECKS_JSON")
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Monitor.GmailChecks, err = optionalMonitorGmailChecksEnv(lookup, "ASSISTANT_MONITOR_GMAIL_CHECKS_JSON")
 	if err != nil {
 		return Config{}, err
 	}
@@ -624,6 +638,30 @@ func optionalMonitorHTTPChecksEnv(lookup func(string) (string, bool), key string
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&checks); err != nil {
 		return nil, fmt.Errorf("%s must match the supported monitor HTTP check schema: %w", key, err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("%s must contain exactly one JSON array value", key)
+	}
+
+	return checks, nil
+}
+
+func optionalMonitorGmailChecksEnv(lookup func(string) (string, bool), key string) ([]MonitorGmailCheckConfig, error) {
+	raw, ok := lookup(key)
+	if !ok {
+		return nil, nil
+	}
+
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+
+	var checks []MonitorGmailCheckConfig
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&checks); err != nil {
+		return nil, fmt.Errorf("%s must match the supported monitor Gmail check schema: %w", key, err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("%s must contain exactly one JSON array value", key)
@@ -932,16 +970,27 @@ func ValidateAndNormalizeMonitorConfig(cfg *MonitorConfig) error {
 			return err
 		}
 	}
-	seenCheckIDs := make(map[string]struct{}, len(cfg.HTTPChecks))
+	for index := range cfg.GmailChecks {
+		if err := validateAndNormalizeMonitorGmailCheck(index, &cfg.GmailChecks[index]); err != nil {
+			return err
+		}
+	}
+	seenCheckIDs := make(map[string]struct{}, len(cfg.HTTPChecks)+len(cfg.GmailChecks))
 	for _, check := range cfg.HTTPChecks {
 		if _, exists := seenCheckIDs[check.ID]; exists {
 			return fmt.Errorf("ASSISTANT_MONITOR_HTTP_CHECKS_JSON contains duplicate check id %q", check.ID)
 		}
 		seenCheckIDs[check.ID] = struct{}{}
 	}
+	for _, check := range cfg.GmailChecks {
+		if _, exists := seenCheckIDs[check.ID]; exists {
+			return fmt.Errorf("ASSISTANT_MONITOR_GMAIL_CHECKS_JSON contains duplicate check id %q", check.ID)
+		}
+		seenCheckIDs[check.ID] = struct{}{}
+	}
 
-	if cfg.Enabled && len(cfg.HTTPChecks) == 0 {
-		return errors.New("ASSISTANT_MONITOR_HTTP_CHECKS_JSON must include at least one HTTP check when monitoring is enabled")
+	if cfg.Enabled && len(cfg.HTTPChecks) == 0 && len(cfg.GmailChecks) == 0 {
+		return errors.New("monitoring requires at least one check in ASSISTANT_MONITOR_HTTP_CHECKS_JSON or ASSISTANT_MONITOR_GMAIL_CHECKS_JSON")
 	}
 
 	return nil
@@ -981,6 +1030,31 @@ func validateAndNormalizeMonitorHTTPCheck(index int, check *MonitorHTTPCheckConf
 		if code < 100 || code > 599 {
 			return fmt.Errorf("ASSISTANT_MONITOR_HTTP_CHECKS_JSON check %q expected status codes must be valid HTTP status codes", check.ID)
 		}
+	}
+
+	return nil
+}
+
+func validateAndNormalizeMonitorGmailCheck(index int, check *MonitorGmailCheckConfig) error {
+	check.ID = strings.TrimSpace(check.ID)
+	check.LabelIDs = cleanNonEmptyStrings(check.LabelIDs)
+	check.SubjectContains = strings.TrimSpace(check.SubjectContains)
+	check.SubjectEquals = strings.TrimSpace(check.SubjectEquals)
+
+	if check.ID == "" {
+		return fmt.Errorf("ASSISTANT_MONITOR_GMAIL_CHECKS_JSON check %d id is required", index)
+	}
+	if len(check.LabelIDs) == 0 && check.SubjectContains == "" && check.SubjectEquals == "" {
+		return fmt.Errorf("ASSISTANT_MONITOR_GMAIL_CHECKS_JSON check %q must include at least one label_ids, subject_contains, or subject_equals filter", check.ID)
+	}
+	if check.SubjectContains != "" && check.SubjectEquals != "" {
+		return fmt.Errorf("ASSISTANT_MONITOR_GMAIL_CHECKS_JSON check %q subject_contains and subject_equals are mutually exclusive", check.ID)
+	}
+	if check.MaxResults < 0 {
+		return fmt.Errorf("ASSISTANT_MONITOR_GMAIL_CHECKS_JSON check %q max_results must not be negative", check.ID)
+	}
+	if check.MaxResults == 0 {
+		check.MaxResults = 10
 	}
 
 	return nil

@@ -601,6 +601,18 @@ func TestLoadFromLookupLoadsMonitorConfig(t *testing.T) {
 					"method": " head "
 				}
 			]`,
+			"ASSISTANT_MONITOR_GMAIL_CHECKS_JSON": `[
+				{
+					"id": "gmail-payments",
+					"label_ids": [" INBOX ", " finance "],
+					"subject_contains": " invoice ",
+					"max_results": 25
+				},
+				{
+					"id": "gmail-ops",
+					"subject_equals": " Nightly report "
+				}
+			]`,
 		}),
 		func() (string, error) { return cwd, nil },
 	)
@@ -632,6 +644,9 @@ func TestLoadFromLookupLoadsMonitorConfig(t *testing.T) {
 	if got := len(cfg.Monitor.HTTPChecks); got != 2 {
 		t.Fatalf("Monitor.HTTPChecks len = %d, want 2", got)
 	}
+	if got := len(cfg.Monitor.GmailChecks); got != 2 {
+		t.Fatalf("Monitor.GmailChecks len = %d, want 2", got)
+	}
 
 	first := cfg.Monitor.HTTPChecks[0]
 	if got, want := first.Headers["Authorization"], "Bearer token"; got != want {
@@ -647,6 +662,25 @@ func TestLoadFromLookupLoadsMonitorConfig(t *testing.T) {
 	}
 	if got, want := second.ExpectedStatusCodes, []int{200}; !slices.Equal(got, want) {
 		t.Fatalf("second.ExpectedStatusCodes = %#v, want %#v", got, want)
+	}
+
+	firstGmail := cfg.Monitor.GmailChecks[0]
+	if got, want := firstGmail.LabelIDs, []string{"INBOX", "finance"}; !slices.Equal(got, want) {
+		t.Fatalf("firstGmail.LabelIDs = %#v, want %#v", got, want)
+	}
+	if got, want := firstGmail.SubjectContains, "invoice"; got != want {
+		t.Fatalf("firstGmail.SubjectContains = %q, want %q", got, want)
+	}
+	if got, want := firstGmail.MaxResults, 25; got != want {
+		t.Fatalf("firstGmail.MaxResults = %d, want %d", got, want)
+	}
+
+	secondGmail := cfg.Monitor.GmailChecks[1]
+	if got, want := secondGmail.SubjectEquals, "Nightly report"; got != want {
+		t.Fatalf("secondGmail.SubjectEquals = %q, want %q", got, want)
+	}
+	if got, want := secondGmail.MaxResults, 10; got != want {
+		t.Fatalf("secondGmail.MaxResults = %d, want %d", got, want)
 	}
 }
 
@@ -666,8 +700,14 @@ func TestLoadFromLookupRejectsInvalidMonitorConfig(t *testing.T) {
 		"bad checks json": {
 			"ASSISTANT_MONITOR_HTTP_CHECKS_JSON": `[{`,
 		},
+		"bad gmail checks json": {
+			"ASSISTANT_MONITOR_GMAIL_CHECKS_JSON": `[{`,
+		},
 		"trailing checks json": {
 			"ASSISTANT_MONITOR_HTTP_CHECKS_JSON": `[] {}`,
+		},
+		"trailing gmail checks json": {
+			"ASSISTANT_MONITOR_GMAIL_CHECKS_JSON": `[] {}`,
 		},
 		"bad check url": {
 			"ASSISTANT_MONITOR_HTTP_CHECKS_JSON": `[{"id":"api","url":"ftp://example.com/health"}]`,
@@ -680,6 +720,22 @@ func TestLoadFromLookupRejectsInvalidMonitorConfig(t *testing.T) {
 				{"id":"api","url":"https://example.com/health"},
 				{"id":"api","url":"https://example.com/ready"}
 			]`,
+		},
+		"gmail check without filters": {
+			"ASSISTANT_MONITOR_GMAIL_CHECKS_JSON": `[{"id":"mail"}]`,
+		},
+		"gmail mutually exclusive subject filters": {
+			"ASSISTANT_MONITOR_GMAIL_CHECKS_JSON": `[{"id":"mail","subject_contains":"invoice","subject_equals":"invoice"}]`,
+		},
+		"gmail duplicate check id": {
+			"ASSISTANT_MONITOR_GMAIL_CHECKS_JSON": `[
+				{"id":"mail","subject_contains":"invoice"},
+				{"id":"mail","label_ids":["INBOX"]}
+			]`,
+		},
+		"cross-source duplicate check id": {
+			"ASSISTANT_MONITOR_HTTP_CHECKS_JSON":  `[{"id":"shared","url":"https://example.com/health"}]`,
+			"ASSISTANT_MONITOR_GMAIL_CHECKS_JSON": `[{"id":"shared","subject_contains":"invoice"}]`,
 		},
 	}
 

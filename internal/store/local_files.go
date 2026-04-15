@@ -527,6 +527,11 @@ func normalizeMonitorCheckpoint(checkpoint *MonitorCheckpoint) (string, error) {
 	checkpoint.CheckID = strings.TrimSpace(checkpoint.CheckID)
 	checkpoint.LastSeenCondition = strings.TrimSpace(checkpoint.LastSeenCondition)
 	checkpoint.Fingerprint = strings.TrimSpace(checkpoint.Fingerprint)
+	metadata, err := normalizeStringMap(checkpoint.Metadata)
+	if err != nil {
+		return "", fmt.Errorf("monitor checkpoint metadata: %w", err)
+	}
+	checkpoint.Metadata = metadata
 
 	if checkpoint.CheckID == "" {
 		return "", errors.New("monitor checkpoint check id is required")
@@ -539,6 +544,23 @@ func normalizeMonitorCheckpoint(checkpoint *MonitorCheckpoint) (string, error) {
 	}
 
 	return checkpoint.CheckID, nil
+}
+
+func normalizeStringMap(values map[string]string) (map[string]string, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+
+	normalized := make(map[string]string, len(values))
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return nil, errors.New("keys must not be empty")
+		}
+		normalized[key] = strings.TrimSpace(value)
+	}
+
+	return normalized, nil
 }
 
 func normalizePrivilegedToolEvent(event *PrivilegedToolEvent) error {

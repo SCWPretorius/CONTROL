@@ -85,7 +85,24 @@ type Message struct {
 	Headers       map[string]string
 	PlainTextBody string
 	HTMLBody      string
+	Attachments   []Attachment
 	Raw           string
+}
+
+// Attachment describes a Gmail message attachment.
+type Attachment struct {
+	PartID       string
+	AttachmentID string
+	Filename     string
+	MimeType     string
+	Size         int64
+	bodyData     string
+}
+
+// DownloadAttachmentRequest fetches attachment content for a Gmail message part.
+type DownloadAttachmentRequest struct {
+	MessageID  string
+	Attachment Attachment
 }
 
 // SendMessageRequest sends a composed email through Gmail.
@@ -205,6 +222,37 @@ func (c *Client) GetMessage(ctx context.Context, request GetMessageRequest) (Mes
 	}
 
 	return toMessage(response)
+}
+
+// DownloadAttachment fetches and decodes attachment bytes for a Gmail message part.
+func (c *Client) DownloadAttachment(ctx context.Context, request DownloadAttachmentRequest) ([]byte, error) {
+	if strings.TrimSpace(request.MessageID) == "" {
+		return nil, errors.New("gmail: message ID is required")
+	}
+	if strings.TrimSpace(request.Attachment.AttachmentID) == "" && strings.TrimSpace(request.Attachment.bodyData) == "" {
+		return nil, errors.New("gmail: attachment body or attachment ID is required")
+	}
+	if strings.TrimSpace(request.Attachment.bodyData) != "" {
+		return decodeBodyBytes(request.Attachment.bodyData)
+	}
+
+	var response attachmentResource
+	err := c.api.DoJSON(ctx, http.MethodGet,
+		fmt.Sprintf(
+			"/users/%s/messages/%s/attachments/%s",
+			url.PathEscape(c.userID),
+			url.PathEscape(strings.TrimSpace(request.MessageID)),
+			url.PathEscape(strings.TrimSpace(request.Attachment.AttachmentID)),
+		),
+		nil,
+		nil,
+		&response,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return decodeBodyBytes(response.Data)
 }
 
 // SendMessage composes and sends an email through Gmail.
@@ -451,6 +499,7 @@ func toMessage(resource messageResource) (Message, error) {
 	if err := extractBodies(resource.Payload, &message); err != nil {
 		return Message{}, err
 	}
+	extractAttachments(resource.Payload, &message)
 
 	return message, nil
 }
@@ -500,21 +549,51 @@ func extractBodies(part *messagePart, message *Message) error {
 	return nil
 }
 
-func decodeBody(encoded string) (string, error) {
-	encoded = strings.TrimSpace(encoded)
-	if encoded == "" {
-		return "", nil
+func extractAttachments(part *messagePart, message *Message) {
+	if part == nil {
+		return
 	}
 
-	if decoded, err := base64.RawURLEncoding.DecodeString(encoded); err == nil {
-		return string(decoded), nil
+	if filename := strings.TrimSpace(part.Filename); filename != "" {
+		message.Attachments = append(message.Attachments, Attachment{
+			PartID:       strings.TrimSpace(part.PartID),
+			AttachmentID: strings.TrimSpace(part.Body.AttachmentID),
+			Filename:     filename,
+			MimeType:     strings.TrimSpace(part.MimeType),
+			Size:         part.Body.Size,
+			bodyData:     strings.TrimSpace(part.Body.Data),
+		})
 	}
-	decoded, err := base64.URLEncoding.DecodeString(encoded)
+
+	for _, child := range part.Parts {
+		extractAttachments(child, message)
+	}
+}
+
+func decodeBody(encoded string) (string, error) {
+	decoded, err := decodeBodyBytes(encoded)
 	if err != nil {
-		return "", fmt.Errorf("gmail: decode body: %w", err)
+		return "", err
 	}
 
 	return string(decoded), nil
+}
+
+func decodeBodyBytes(encoded string) ([]byte, error) {
+	encoded = strings.TrimSpace(encoded)
+	if encoded == "" {
+		return nil, nil
+	}
+
+	if decoded, err := base64.RawURLEncoding.DecodeString(encoded); err == nil {
+		return decoded, nil
+	}
+	decoded, err := base64.URLEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("gmail: decode body: %w", err)
+	}
+
+	return decoded, nil
 }
 
 type listMessagesResource struct {
@@ -546,7 +625,9 @@ type sentMessageResource struct {
 }
 
 type messagePart struct {
+	PartID   string          `json:"partId"`
 	MimeType string          `json:"mimeType"`
+	Filename string          `json:"filename"`
 	Headers  []messageHeader `json:"headers"`
 	Body     messageBody     `json:"body"`
 	Parts    []*messagePart  `json:"parts"`
@@ -558,5 +639,12 @@ type messageHeader struct {
 }
 
 type messageBody struct {
+	Data         string `json:"data"`
+	AttachmentID string `json:"attachmentId"`
+	Size         int64  `json:"size"`
+}
+
+type attachmentResource struct {
 	Data string `json:"data"`
+	Size int64  `json:"size"`
 }
