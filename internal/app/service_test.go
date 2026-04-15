@@ -147,6 +147,11 @@ func TestRuntimeConfigSessionToolsCarryGoogleWorkspaceToolsIntoSDKConfigs(t *tes
 			ResumeSessions:  true,
 			WorkingDir:      root,
 			ConfigDir:       root,
+			Provider: &config.CopilotProviderConfig{
+				Type:    "openai",
+				WireAPI: "responses",
+				BaseURL: "http://127.0.0.1:11434/v1",
+			},
 		},
 		Paths: config.PathConfig{
 			RuntimeDir: root,
@@ -198,6 +203,12 @@ func TestRuntimeConfigSessionToolsCarryGoogleWorkspaceToolsIntoSDKConfigs(t *tes
 	assertToolNames(t, runtimeCfg.Session.Tools, expectedRuntimeToolNames())
 	assertToolNames(t, createCfg.Tools, expectedRuntimeToolNames())
 	assertToolNames(t, resumeCfg.Tools, expectedRuntimeToolNames())
+	if got := createCfg.Provider.WireApi; got != "responses" {
+		t.Fatalf("CreateConfig provider wireApi = %q, want %q", got, "responses")
+	}
+	if got := resumeCfg.Provider.BaseURL; got != "http://127.0.0.1:11434/v1" {
+		t.Fatalf("ResumeConfig provider baseUrl = %q, want %q", got, "http://127.0.0.1:11434/v1")
+	}
 	if got := createCfg.MCPServers["filesystem"]["command"]; got != "npx" {
 		t.Fatalf("CreateConfig MCP filesystem command = %#v, want %q", got, "npx")
 	}

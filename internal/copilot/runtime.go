@@ -70,6 +70,7 @@ type SessionOptions struct {
 	ConfigDir       string
 	ClientName      string
 	Tools           []sdk.Tool
+	Provider        *sdk.ProviderConfig
 	MCPServers      map[string]sdk.MCPServerConfig
 }
 
@@ -81,6 +82,7 @@ func (o SessionOptions) CreateConfig(sessionID string, hooks RuntimeHooks, exter
 		ReasoningEffort:     strings.TrimSpace(o.ReasoningEffort),
 		ConfigDir:           strings.TrimSpace(o.ConfigDir),
 		Tools:               cloneTools(o.Tools),
+		Provider:            cloneProviderConfig(o.Provider),
 		MCPServers:          cloneMCPServers(o.MCPServers),
 		OnPermissionRequest: hooks.wrapPermissionHandler(externalKey),
 		OnUserInputRequest:  hooks.OnUserInputRequest,
@@ -97,6 +99,7 @@ func (o SessionOptions) ResumeConfig(hooks RuntimeHooks, externalKey string) *sd
 		ReasoningEffort:     strings.TrimSpace(o.ReasoningEffort),
 		ConfigDir:           strings.TrimSpace(o.ConfigDir),
 		Tools:               cloneTools(o.Tools),
+		Provider:            cloneProviderConfig(o.Provider),
 		MCPServers:          cloneMCPServers(o.MCPServers),
 		OnPermissionRequest: hooks.wrapPermissionHandler(externalKey),
 		OnUserInputRequest:  hooks.OnUserInputRequest,
@@ -130,6 +133,7 @@ func ConfigFromFoundation(cfg config.Config) RuntimeConfig {
 			WorkingDir:      cfg.Session.WorkingDir,
 			ConfigDir:       cfg.Session.ConfigDir,
 			ClientName:      defaultClientName,
+			Provider:        configProviderToSDK(cfg.Session.Provider),
 			MCPServers:      configMCPServersToSDK(cfg.Tools.MCP.Servers),
 		},
 		LogLevel: defaultLogLevel,
@@ -924,6 +928,20 @@ func cloneTools(tools []sdk.Tool) []sdk.Tool {
 	return cloned
 }
 
+func cloneProviderConfig(provider *sdk.ProviderConfig) *sdk.ProviderConfig {
+	if provider == nil {
+		return nil
+	}
+
+	cloned := *provider
+	if provider.Azure != nil {
+		azure := *provider.Azure
+		cloned.Azure = &azure
+	}
+
+	return &cloned
+}
+
 func cloneMCPServers(servers map[string]sdk.MCPServerConfig) map[string]sdk.MCPServerConfig {
 	if len(servers) == 0 {
 		return nil
@@ -999,6 +1017,27 @@ func configMCPServersToSDK(servers map[string]config.MCPServerConfig) map[string
 		}
 
 		converted[name] = entry
+	}
+
+	return converted
+}
+
+func configProviderToSDK(provider *config.CopilotProviderConfig) *sdk.ProviderConfig {
+	if provider == nil {
+		return nil
+	}
+
+	converted := &sdk.ProviderConfig{
+		Type:        provider.Type,
+		WireApi:     provider.WireAPI,
+		BaseURL:     provider.BaseURL,
+		APIKey:      provider.APIKey,
+		BearerToken: provider.BearerToken,
+	}
+	if provider.Azure != nil {
+		converted.Azure = &sdk.AzureProviderOptions{
+			APIVersion: provider.Azure.APIVersion,
+		}
 	}
 
 	return converted

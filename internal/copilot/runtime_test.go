@@ -234,6 +234,11 @@ func TestSessionOptionsCreateConfigMapsFoundationValues(t *testing.T) {
 		WorkingDir:      `C:\repo`,
 		ConfigDir:       `C:\runtime\copilot`,
 		ClientName:      "control-tests",
+		Provider: &sdk.ProviderConfig{
+			Type:    "openai",
+			BaseURL: "http://127.0.0.1:11434/v1",
+			APIKey:  "provider-key",
+		},
 		MCPServers: map[string]sdk.MCPServerConfig{
 			"filesystem": {
 				"type":    "stdio",
@@ -265,6 +270,12 @@ func TestSessionOptionsCreateConfigMapsFoundationValues(t *testing.T) {
 	}
 	if len(cfg.Tools) != 0 {
 		t.Fatalf("Tools length = %d, want %d", len(cfg.Tools), 0)
+	}
+	if cfg.Provider == nil {
+		t.Fatal("Provider = nil, want provider config")
+	}
+	if got := cfg.Provider.BaseURL; got != "http://127.0.0.1:11434/v1" {
+		t.Fatalf("Provider.BaseURL = %q, want %q", got, "http://127.0.0.1:11434/v1")
 	}
 	if got := cfg.MCPServers["filesystem"]["command"]; got != "npx" {
 		t.Fatalf("MCPServers filesystem command = %#v, want %q", got, "npx")
@@ -310,6 +321,15 @@ func TestSessionOptionsCreateAndResumeConfigIncludeCustomTools(t *testing.T) {
 		ConfigDir:       `C:\runtime\copilot`,
 		ClientName:      "control-tests",
 		Tools:           []sdk.Tool{customTool, secondTool},
+		Provider: &sdk.ProviderConfig{
+			Type:        "azure",
+			WireApi:     "responses",
+			BaseURL:     "https://example.openai.azure.com",
+			BearerToken: "provider-token",
+			Azure: &sdk.AzureProviderOptions{
+				APIVersion: "2024-10-21",
+			},
+		},
 		MCPServers: map[string]sdk.MCPServerConfig{
 			"tickets": {
 				"type":  "http",
@@ -333,9 +353,19 @@ func TestSessionOptionsCreateAndResumeConfigIncludeCustomTools(t *testing.T) {
 	if got := resumeCfg.MCPServers["tickets"]["url"]; got != "https://example.com/mcp" {
 		t.Fatalf("ResumeConfig MCP url = %#v", got)
 	}
+	if got := createCfg.Provider.BearerToken; got != "provider-token" {
+		t.Fatalf("CreateConfig provider bearer token = %q, want %q", got, "provider-token")
+	}
+	if got := resumeCfg.Provider.Azure.APIVersion; got != "2024-10-21" {
+		t.Fatalf("ResumeConfig provider api version = %q, want %q", got, "2024-10-21")
+	}
 	createCfg.MCPServers["tickets"]["url"] = "https://mutated.example.com/mcp"
 	if got := options.MCPServers["tickets"]["url"]; got != "https://example.com/mcp" {
 		t.Fatalf("options MCP url mutated to %#v, want original value", got)
+	}
+	createCfg.Provider.Azure.APIVersion = "mutated"
+	if got := options.Provider.Azure.APIVersion; got != "2024-10-21" {
+		t.Fatalf("options provider api version mutated to %q, want original value", got)
 	}
 	if &createCfg.Tools[0] == &options.Tools[0] || &resumeCfg.Tools[0] == &options.Tools[0] {
 		t.Fatal("session config tools should be cloned, not alias the source slice")
@@ -359,6 +389,12 @@ func TestConfigFromFoundationMapsExistingConfig(t *testing.T) {
 			ResumeSessions:  true,
 			WorkingDir:      `C:\repo`,
 			ConfigDir:       `C:\repo\var\runtime\copilot`,
+			Provider: &config.CopilotProviderConfig{
+				Type:    "openai",
+				WireAPI: "responses",
+				BaseURL: "http://127.0.0.1:11434/v1",
+				APIKey:  "provider-key",
+			},
 		},
 		Tools: config.ToolConfig{
 			MCP: config.MCPToolConfig{
@@ -383,6 +419,12 @@ func TestConfigFromFoundationMapsExistingConfig(t *testing.T) {
 	}
 	if runtimeCfg.Session.Namespace != "telegram-personal-assistant" {
 		t.Fatalf("Session.Namespace = %q, want %q", runtimeCfg.Session.Namespace, "telegram-personal-assistant")
+	}
+	if runtimeCfg.Session.Provider == nil {
+		t.Fatal("Session.Provider = nil, want configured provider")
+	}
+	if got := runtimeCfg.Session.Provider.WireApi; got != "responses" {
+		t.Fatalf("Session.Provider.WireApi = %q, want %q", got, "responses")
 	}
 	if got := runtimeCfg.Session.MCPServers["filesystem"]["command"]; got != "npx" {
 		t.Fatalf("Session.MCPServers filesystem command = %#v, want %q", got, "npx")
@@ -582,6 +624,7 @@ func cloneSessionConfigForTest(cfg *sdk.SessionConfig) *sdk.SessionConfig {
 
 	cloned := *cfg
 	cloned.Tools = cloneTools(cfg.Tools)
+	cloned.Provider = cloneProviderConfig(cfg.Provider)
 	cloned.MCPServers = cloneMCPServers(cfg.MCPServers)
 	return &cloned
 }
@@ -593,6 +636,7 @@ func cloneResumeSessionConfigForTest(cfg *sdk.ResumeSessionConfig) *sdk.ResumeSe
 
 	cloned := *cfg
 	cloned.Tools = cloneTools(cfg.Tools)
+	cloned.Provider = cloneProviderConfig(cfg.Provider)
 	cloned.MCPServers = cloneMCPServers(cfg.MCPServers)
 	return &cloned
 }

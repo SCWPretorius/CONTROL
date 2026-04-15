@@ -122,9 +122,10 @@ func Run(ctx context.Context, cfg config.Config, logger *log.Logger) error {
 	defer stopMonitor()
 
 	logger.Printf(
-		"assistant ready transport=%s model=%s namespace=%s allowed_user=%d allowed_chat=%d resume_sessions=%t runtime_dir=%s storage_dir=%s privileged_tools=%t google_tools=%t mcp_server_count=%d mcp_admin_enabled=%t custom_tool_count=%d",
+		"assistant ready transport=%s model=%s provider=%s namespace=%s allowed_user=%d allowed_chat=%d resume_sessions=%t runtime_dir=%s storage_dir=%s privileged_tools=%t google_tools=%t mcp_server_count=%d mcp_admin_enabled=%t custom_tool_count=%d",
 		cfg.Copilot.Transport(),
 		cfg.Session.Model,
+		logSessionProvider(cfg.Session.Provider),
 		cfg.Session.Namespace,
 		cfg.Telegram.AllowedUserID,
 		cfg.Telegram.AllowedChatID,
@@ -264,6 +265,13 @@ func startTelegramTypingLoop(ctx context.Context, logger *log.Logger, responder 
 		cancel()
 		<-done
 	}
+}
+
+func logSessionProvider(provider *config.CopilotProviderConfig) string {
+	if provider == nil {
+		return "copilot"
+	}
+	return provider.NormalizedType()
 }
 
 func newPermissionAuditRecord(event copilot.PermissionEvent, result sdk.PermissionRequestResult) store.PrivilegedToolEvent {

@@ -32,6 +32,9 @@ func TestLoadFromLookupDefaultsAndNormalizesPaths(t *testing.T) {
 	if cfg.Session.Model != defaultModel {
 		t.Fatalf("Model = %q, want %q", cfg.Session.Model, defaultModel)
 	}
+	if cfg.Session.Provider != nil {
+		t.Fatalf("Provider = %#v, want nil by default", cfg.Session.Provider)
+	}
 
 	if got, want := cfg.Paths.RuntimeDir, filepath.Join(cwd, "var", "runtime"); got != want {
 		t.Fatalf("RuntimeDir = %q, want %q", got, want)
@@ -440,6 +443,111 @@ func TestLoadFromLookupRejectsInvalidMCPConfig(t *testing.T) {
 			)
 			if err == nil {
 				t.Fatalf("LoadFromLookup() error = nil, want MCP validation error for %q", name)
+			}
+		})
+	}
+}
+
+func TestLoadFromLookupLoadsCopilotProviderConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := LoadFromLookup(
+		envLookup(map[string]string{
+			"TELEGRAM_BOT_TOKEN":       "token",
+			"TELEGRAM_ALLOWED_USER_ID": "1",
+			"TELEGRAM_ALLOWED_CHAT_ID": "2",
+			"COPILOT_CLI_PATH":         "copilot",
+			"COPILOT_PROVIDER_JSON":    `{"baseUrl":" http://127.0.0.1:11434/v1 ","apiKey":" test-key "}`,
+		}),
+		func() (string, error) { return t.TempDir(), nil },
+	)
+	if err != nil {
+		t.Fatalf("LoadFromLookup() error = %v", err)
+	}
+
+	if cfg.Session.Provider == nil {
+		t.Fatal("Provider = nil, want configured provider")
+	}
+	if got, want := cfg.Session.Provider.Type, defaultProviderType; got != want {
+		t.Fatalf("Provider.Type = %q, want %q", got, want)
+	}
+	if got, want := cfg.Session.Provider.WireAPI, defaultProviderWireAPI; got != want {
+		t.Fatalf("Provider.WireAPI = %q, want %q", got, want)
+	}
+	if got, want := cfg.Session.Provider.BaseURL, "http://127.0.0.1:11434/v1"; got != want {
+		t.Fatalf("Provider.BaseURL = %q, want %q", got, want)
+	}
+	if got, want := cfg.Session.Provider.APIKey, "test-key"; got != want {
+		t.Fatalf("Provider.APIKey = %q, want %q", got, want)
+	}
+}
+
+func TestLoadFromLookupLoadsAzureCopilotProviderConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := LoadFromLookup(
+		envLookup(map[string]string{
+			"TELEGRAM_BOT_TOKEN":       "token",
+			"TELEGRAM_ALLOWED_USER_ID": "1",
+			"TELEGRAM_ALLOWED_CHAT_ID": "2",
+			"COPILOT_CLI_PATH":         "copilot",
+			"COPILOT_PROVIDER_JSON":    `{"type":" azure ","baseUrl":"https://example.openai.azure.com","bearerToken":" bearer-token ","azure":{"apiVersion":" "}}`,
+		}),
+		func() (string, error) { return t.TempDir(), nil },
+	)
+	if err != nil {
+		t.Fatalf("LoadFromLookup() error = %v", err)
+	}
+
+	if cfg.Session.Provider == nil || cfg.Session.Provider.Azure == nil {
+		t.Fatal("Provider.Azure = nil, want configured azure provider")
+	}
+	if got, want := cfg.Session.Provider.Type, "azure"; got != want {
+		t.Fatalf("Provider.Type = %q, want %q", got, want)
+	}
+	if got, want := cfg.Session.Provider.WireAPI, defaultProviderWireAPI; got != want {
+		t.Fatalf("Provider.WireAPI = %q, want %q", got, want)
+	}
+	if got, want := cfg.Session.Provider.BearerToken, "bearer-token"; got != want {
+		t.Fatalf("Provider.BearerToken = %q, want %q", got, want)
+	}
+	if got, want := cfg.Session.Provider.Azure.APIVersion, defaultAzureAPIVersion; got != want {
+		t.Fatalf("Provider.Azure.APIVersion = %q, want %q", got, want)
+	}
+}
+
+func TestLoadFromLookupRejectsInvalidCopilotProviderConfig(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]string{
+		"invalid json":     `{`,
+		"missing base url": `{"type":"openai"}`,
+		"bad base url":     `{"baseUrl":"not-a-url"}`,
+		"bad url scheme":   `{"baseUrl":"ftp://example.com"}`,
+		"unsupported type": `{"type":"local","baseUrl":"https://example.com"}`,
+		"bad wire api":     `{"type":"openai","baseUrl":"https://example.com","wireApi":"chat"}`,
+		"anthropic wire":   `{"type":"anthropic","baseUrl":"https://example.com","wireApi":"responses"}`,
+		"azure on openai":  `{"type":"openai","baseUrl":"https://example.com","azure":{"apiVersion":"2024-10-21"}}`,
+		"unknown field":    `{"baseUrl":"https://example.com","unknown":true}`,
+	}
+
+	for name, raw := range cases {
+		name, raw := name, raw
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := LoadFromLookup(
+				envLookup(map[string]string{
+					"TELEGRAM_BOT_TOKEN":       "token",
+					"TELEGRAM_ALLOWED_USER_ID": "1",
+					"TELEGRAM_ALLOWED_CHAT_ID": "2",
+					"COPILOT_CLI_PATH":         "copilot",
+					"COPILOT_PROVIDER_JSON":    raw,
+				}),
+				func() (string, error) { return t.TempDir(), nil },
+			)
+			if err == nil {
+				t.Fatalf("LoadFromLookup() error = nil, want provider validation error for %q", name)
 			}
 		})
 	}

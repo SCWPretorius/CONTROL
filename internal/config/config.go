@@ -25,6 +25,9 @@ const (
 	defaultToolHTTPTimeout    = 30 * time.Second
 	defaultToolShellTimeout   = 30 * time.Second
 	defaultToolMaxOutputBytes = 64 * 1024
+	defaultProviderType       = "openai"
+	defaultProviderWireAPI    = "completions"
+	defaultAzureAPIVersion    = "2024-10-21"
 	defaultMonitorMode        = MonitorModeNotifyOnly
 	defaultMonitorInterval    = time.Minute
 	defaultMonitorJitter      = 10 * time.Second
@@ -79,6 +82,7 @@ type SessionConfig struct {
 	ResumeSessions  bool
 	WorkingDir      string
 	ConfigDir       string
+	Provider        *CopilotProviderConfig
 }
 
 type ToolConfig struct {
@@ -86,6 +90,30 @@ type ToolConfig struct {
 	MCP        MCPToolConfig
 	Privileged PrivilegedToolConfig
 	Runtime    ToolRuntimeConfig
+}
+
+type CopilotProviderConfig struct {
+	Type        string                      `json:"type,omitempty"`
+	WireAPI     string                      `json:"wireApi,omitempty"`
+	BaseURL     string                      `json:"baseUrl"`
+	APIKey      string                      `json:"apiKey,omitempty"`
+	BearerToken string                      `json:"bearerToken,omitempty"`
+	Azure       *CopilotAzureProviderConfig `json:"azure,omitempty"`
+}
+
+type CopilotAzureProviderConfig struct {
+	APIVersion string `json:"apiVersion,omitempty"`
+}
+
+func (c *CopilotProviderConfig) Enabled() bool {
+	return c != nil
+}
+
+func (c *CopilotProviderConfig) NormalizedType() string {
+	if c == nil || strings.TrimSpace(c.Type) == "" {
+		return defaultProviderType
+	}
+	return strings.TrimSpace(strings.ToLower(c.Type))
 }
 
 type GoogleToolConfig struct {
@@ -300,6 +328,13 @@ func LoadFromLookup(lookup func(string) (string, bool), getwd func() (string, er
 	cfg.Session.ConfigDir, err = normalizePath(cwd, cfg.Session.ConfigDir)
 	if err != nil {
 		return Config{}, fmt.Errorf("resolve copilot config dir: %w", err)
+	}
+	cfg.Session.Provider, err = optionalCopilotProviderEnv(lookup, "COPILOT_PROVIDER_JSON")
+	if err != nil {
+		return Config{}, err
+	}
+	if err := ValidateAndNormalizeCopilotProvider(cfg.Session.Provider); err != nil {
+		return Config{}, err
 	}
 
 	cfg.Tools.Google.OAuth.Scopes = optionalCSVEnv(lookup, "GOOGLE_OAUTH_SCOPES", defaultGoogleOAuthScopes)
@@ -597,6 +632,30 @@ func optionalMonitorHTTPChecksEnv(lookup func(string) (string, bool), key string
 	return checks, nil
 }
 
+func optionalCopilotProviderEnv(lookup func(string) (string, bool), key string) (*CopilotProviderConfig, error) {
+	raw, ok := lookup(key)
+	if !ok {
+		return nil, nil
+	}
+
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+
+	var provider CopilotProviderConfig
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&provider); err != nil {
+		return nil, fmt.Errorf("%s must match the supported Copilot provider schema: %w", key, err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("%s must contain exactly one JSON object value", key)
+	}
+
+	return &provider, nil
+}
+
 func normalizePath(baseDir, path string) (string, error) {
 	if filepath.IsAbs(path) {
 		return filepath.Clean(path), nil
@@ -769,6 +828,71 @@ func ValidateAndNormalizeMCPAdminConfig(admin *MCPAdminConfig) error {
 	}
 	if strings.TrimSpace(port) == "" {
 		return errors.New("ASSISTANT_TOOL_MCP_ADMIN_LISTEN_ADDR must include a TCP port")
+	}
+
+	return nil
+}
+
+func ValidateAndNormalizeCopilotProvider(provider *CopilotProviderConfig) error {
+	if provider == nil {
+		return nil
+	}
+
+	provider.Type = strings.TrimSpace(strings.ToLower(provider.Type))
+	if provider.Type == "" {
+		provider.Type = defaultProviderType
+	}
+	provider.WireAPI = strings.TrimSpace(strings.ToLower(provider.WireAPI))
+	provider.BaseURL = strings.TrimSpace(provider.BaseURL)
+	provider.APIKey = strings.TrimSpace(provider.APIKey)
+	provider.BearerToken = strings.TrimSpace(provider.BearerToken)
+
+	if provider.BaseURL == "" {
+		return errors.New("COPILOT_PROVIDER_JSON baseUrl is required")
+	}
+	parsedURL, err := url.Parse(provider.BaseURL)
+	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
+		return errors.New("COPILOT_PROVIDER_JSON baseUrl must be an absolute URL")
+	}
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return errors.New("COPILOT_PROVIDER_JSON baseUrl scheme must be http or https")
+	}
+
+	switch provider.Type {
+	case "openai", "azure", "anthropic":
+	default:
+		return fmt.Errorf("COPILOT_PROVIDER_JSON type %q is unsupported", provider.Type)
+	}
+
+	switch provider.Type {
+	case "openai", "azure":
+		if provider.WireAPI == "" {
+			provider.WireAPI = defaultProviderWireAPI
+		}
+		switch provider.WireAPI {
+		case "completions", "responses":
+		default:
+			return fmt.Errorf("COPILOT_PROVIDER_JSON wireApi %q is unsupported for provider type %q", provider.WireAPI, provider.Type)
+		}
+	case "anthropic":
+		if provider.WireAPI != "" {
+			return errors.New("COPILOT_PROVIDER_JSON wireApi is only supported for openai or azure providers")
+		}
+	}
+
+	if provider.Type != "azure" {
+		if provider.Azure != nil {
+			return errors.New("COPILOT_PROVIDER_JSON azure options are only supported when type is \"azure\"")
+		}
+		return nil
+	}
+	if provider.Azure == nil {
+		return nil
+	}
+
+	provider.Azure.APIVersion = strings.TrimSpace(provider.Azure.APIVersion)
+	if provider.Azure.APIVersion == "" {
+		provider.Azure.APIVersion = defaultAzureAPIVersion
 	}
 
 	return nil

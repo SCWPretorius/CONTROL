@@ -46,6 +46,7 @@ internal/tools        Google Workspace and privileged local tools
 | `COPILOT_RESUME_SESSIONS` | `true` |
 | `COPILOT_WORKING_DIR` | current working directory |
 | `COPILOT_CONFIG_DIR` | `<runtime dir>/copilot` |
+| `COPILOT_PROVIDER_JSON` | empty; optional JSON object that enables Copilot SDK BYOK/provider mode for `openai`, `azure`, or `anthropic` endpoints |
 | `GOOGLE_OAUTH_CLIENT_ID` | empty; must be set together with `GOOGLE_OAUTH_CLIENT_SECRET` and `GOOGLE_OAUTH_REDIRECT_URL` |
 | `GOOGLE_OAUTH_CLIENT_SECRET` | empty; must be set together with `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_REDIRECT_URL` |
 | `GOOGLE_OAUTH_REDIRECT_URL` | empty; must be set together with `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET` |
@@ -72,6 +73,7 @@ internal/tools        Google Workspace and privileged local tools
 
 The tool layer uses shared config from `internal/config` so privileged capabilities stay env-driven and narrow by default:
 
+- `COPILOT_PROVIDER_JSON` is an optional JSON object that CONTROL forwards into the Copilot SDK session `provider` field on both create and resume. Supported `type` values are `openai`, `azure`, and `anthropic`; `baseUrl` is required; `wireApi` is supported only for `openai`/`azure`; and local OpenAI-compatible runtimes such as Ollama or vLLM can omit auth entirely.
 - `GOOGLE_OAUTH_*` is the single shared OAuth client config for Gmail + Calendar integrations.
 - `GOOGLE_OAUTH_ACCESS_TOKEN` is the v1 runtime bearer token for Google Workspace tools. Leave it unset to keep Google tools disabled while still building and testing locally.
 - `ASSISTANT_TOOL_MCP_SERVERS_JSON` is an optional JSON object keyed by MCP server name. Supported `type` values are `local`/`stdio` for subprocess servers and `http`/`sse` for remote servers. Every server must declare at least one `tools` selector.
@@ -96,6 +98,18 @@ Home Assistant example:
 $env:ASSISTANT_TOOL_MCP_SERVERS_JSON = '{"Home Assistant":{"type":"stdio","command":"mcp-proxy","args":["--transport=streamablehttp","--stateless","http://localhost:8123/api/mcp"],"env":{"API_ACCESS_TOKEN":"replace-with-your-home-assistant-token"},"tools":["*"]}}'
 ```
 
+Copilot provider examples:
+
+```powershell
+# Local Ollama / any OpenAI-compatible endpoint
+$env:COPILOT_MODEL = "llama3.2"
+$env:COPILOT_PROVIDER_JSON = '{"baseUrl":"http://127.0.0.1:11434/v1"}'
+
+# Remote OpenAI-compatible provider with bearer auth
+$env:COPILOT_MODEL = "gpt-4.1"
+$env:COPILOT_PROVIDER_JSON = '{"type":"openai","wireApi":"responses","baseUrl":"https://example.com/v1","bearerToken":"replace-me"}'
+```
+
 ## Local setup
 
 PowerShell example:
@@ -105,6 +119,8 @@ $env:TELEGRAM_BOT_TOKEN = "replace-me"
 $env:TELEGRAM_ALLOWED_USER_ID = "123456789"
 $env:TELEGRAM_ALLOWED_CHAT_ID = "123456789"
 $env:COPILOT_CLI_PATH = "copilot"
+$env:COPILOT_PROVIDER_JSON = '{"baseUrl":"http://127.0.0.1:11434/v1"}'
+$env:COPILOT_MODEL = "llama3.2"
 $env:GOOGLE_OAUTH_CLIENT_ID = "replace-me.apps.googleusercontent.com"
 $env:GOOGLE_OAUTH_CLIENT_SECRET = "replace-me"
 $env:GOOGLE_OAUTH_REDIRECT_URL = "http://127.0.0.1:8787/oauth/callback"
@@ -127,6 +143,7 @@ Expected result with valid runtime credentials:
 - runtime and storage directories are created if missing
 - Telegram long polling starts successfully for the configured bot
 - Copilot sessions are created and resumed per authorized Telegram chat
+- when `COPILOT_PROVIDER_JSON` is set, the configured BYOK/provider settings are attached to every Copilot session create/resume request
 - privileged tools are always registered behind the local policy layer
 - Google Workspace tools are registered only when both OAuth app config and `GOOGLE_OAUTH_ACCESS_TOKEN` are set
 - configured MCP servers are attached to every Copilot session create/resume request
