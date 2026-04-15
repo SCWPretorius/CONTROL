@@ -8,7 +8,7 @@ Build a personal assistant in Go that uses the GitHub Copilot SDK as its runtime
 
 - The working tree is effectively a blank slate right now: only `github-copilot-sdk.md` is present in the filesystem.
 - This should be treated as a clean rewrite, not a migration plan.
-- The research note in `C:\Users\preto\Documents\Repos\CONTROL\github-copilot-sdk.md` confirms the Go SDK is a thin client around the Copilot CLI runtime, with sessions, tool callbacks, permission handling, hooks, MCP, and resumable session support.
+- The research note in `github-copilot-sdk.md` confirms the Go SDK is a thin client around the Copilot CLI runtime, with sessions, tool callbacks, permission handling, hooks, MCP, and resumable session support.
 
 ## Proposed approach
 

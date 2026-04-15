@@ -17,6 +17,7 @@ const TransportName = "telegram"
 
 var (
 	ErrAccessDenied    = errors.New("telegram: access denied")
+	ErrAlertChatUnset  = errors.New("telegram: alert chat is not configured")
 	ErrEmptyMessage    = errors.New("telegram: empty message")
 	ErrMissingSender   = errors.New("telegram: message sender is required")
 	ErrNilUpdate       = errors.New("telegram: update is required")
@@ -172,29 +173,25 @@ func (a *Adapter) HandleUpdate(ctx context.Context, update *models.Update) error
 
 // Reply sends a text reply back to Telegram for a normalized inbound message.
 func (a *Adapter) Reply(ctx context.Context, message router.Message, text string) error {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return errors.New("telegram: reply text is required")
-	}
-
-	params := &tgbot.SendMessageParams{
-		ChatID: message.ChatID,
-		Text:   text,
-	}
-
+	var replyParameters *models.ReplyParameters
 	if message.MessageID != 0 {
-		params.ReplyParameters = &models.ReplyParameters{
+		replyParameters = &models.ReplyParameters{
 			MessageID:                message.MessageID,
 			ChatID:                   message.ChatID,
 			AllowSendingWithoutReply: true,
 		}
 	}
 
-	if _, err := a.bot.SendMessage(ctx, params); err != nil {
-		return fmt.Errorf("send telegram message: %w", err)
+	return a.sendMessage(ctx, message.ChatID, text, replyParameters, "reply text")
+}
+
+// SendAlert sends a direct outbound message to the configured allowed chat.
+func (a *Adapter) SendAlert(ctx context.Context, text string) error {
+	if a.access.AllowedChatID == 0 {
+		return ErrAlertChatUnset
 	}
 
-	return nil
+	return a.sendMessage(ctx, a.access.AllowedChatID, text, nil, "alert text")
 }
 
 // SendTyping emits Telegram's native typing indicator for the target chat.
@@ -205,6 +202,25 @@ func (a *Adapter) SendTyping(ctx context.Context, message router.Message) error 
 	}
 	if _, err := a.bot.SendChatAction(ctx, params); err != nil {
 		return fmt.Errorf("send telegram chat action: %w", err)
+	}
+
+	return nil
+}
+
+func (a *Adapter) sendMessage(ctx context.Context, chatID int64, text string, replyParameters *models.ReplyParameters, textLabel string) error {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return fmt.Errorf("telegram: %s is required", textLabel)
+	}
+
+	params := &tgbot.SendMessageParams{
+		ChatID:          chatID,
+		Text:            text,
+		ReplyParameters: replyParameters,
+	}
+
+	if _, err := a.bot.SendMessage(ctx, params); err != nil {
+		return fmt.Errorf("send telegram message: %w", err)
 	}
 
 	return nil

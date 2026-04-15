@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -24,6 +25,11 @@ const (
 	defaultToolHTTPTimeout    = 30 * time.Second
 	defaultToolShellTimeout   = 30 * time.Second
 	defaultToolMaxOutputBytes = 64 * 1024
+	defaultMonitorMode        = MonitorModeNotifyOnly
+	defaultMonitorInterval    = time.Minute
+	defaultMonitorJitter      = 10 * time.Second
+	defaultMonitorTimeout     = 10 * time.Second
+	defaultMonitorCooldown    = 15 * time.Minute
 )
 
 var defaultGoogleOAuthScopes = []string{
@@ -39,6 +45,7 @@ type Config struct {
 	Paths    PathConfig
 	Session  SessionConfig
 	Tools    ToolConfig
+	Monitor  MonitorConfig
 }
 
 type TelegramConfig struct {
@@ -164,6 +171,38 @@ type ToolRuntimeConfig struct {
 	MaxCommandOutputBytes int
 }
 
+const (
+	MonitorModeNotifyOnly        = "notify_only"
+	MonitorModeAnalyzeThenNotify = "analyze_then_notify"
+	MonitorModeAutoFixDisabled   = "auto_fix_disabled"
+)
+
+type MonitorConfig struct {
+	Enabled    bool
+	Mode       string
+	Interval   time.Duration
+	Jitter     time.Duration
+	Timeout    time.Duration
+	Cooldown   time.Duration
+	HTTPChecks []MonitorHTTPCheckConfig
+}
+
+func (c MonitorConfig) Configured() bool {
+	return c.Enabled || len(c.HTTPChecks) > 0
+}
+
+func (c MonitorConfig) UsesCopilotAnalysis() bool {
+	return c.Mode == MonitorModeAnalyzeThenNotify
+}
+
+type MonitorHTTPCheckConfig struct {
+	ID                  string            `json:"id"`
+	URL                 string            `json:"url"`
+	Method              string            `json:"method,omitempty"`
+	Headers             map[string]string `json:"headers,omitempty"`
+	ExpectedStatusCodes []int             `json:"expected_status_codes,omitempty"`
+}
+
 // Load reads configuration from environment variables and resolves paths.
 func Load() (Config, error) {
 	return LoadFromLookup(os.LookupEnv, os.Getwd)
@@ -211,6 +250,14 @@ func LoadFromLookup(lookup func(string) (string, bool), getwd func() (string, er
 				},
 			},
 			Runtime: ToolRuntimeConfig{},
+		},
+		Monitor: MonitorConfig{
+			Enabled:  optionalBoolEnv(lookup, "ASSISTANT_MONITOR_ENABLED", false),
+			Mode:     optionalEnv(lookup, "ASSISTANT_MONITOR_MODE", defaultMonitorMode),
+			Interval: defaultMonitorInterval,
+			Jitter:   defaultMonitorJitter,
+			Timeout:  defaultMonitorTimeout,
+			Cooldown: defaultMonitorCooldown,
 		},
 	}
 
@@ -318,6 +365,34 @@ func LoadFromLookup(lookup func(string) (string, bool), getwd func() (string, er
 
 	cfg.Tools.Runtime.MaxCommandOutputBytes, err = optionalIntEnv(lookup, "ASSISTANT_TOOL_MAX_OUTPUT_BYTES", defaultToolMaxOutputBytes)
 	if err != nil {
+		return Config{}, err
+	}
+
+	cfg.Monitor.Interval, err = optionalDurationEnv(lookup, "ASSISTANT_MONITOR_INTERVAL", defaultMonitorInterval)
+	if err != nil {
+		return Config{}, err
+	}
+
+	cfg.Monitor.Jitter, err = optionalDurationEnv(lookup, "ASSISTANT_MONITOR_JITTER", defaultMonitorJitter)
+	if err != nil {
+		return Config{}, err
+	}
+
+	cfg.Monitor.Timeout, err = optionalDurationEnv(lookup, "ASSISTANT_MONITOR_TIMEOUT", defaultMonitorTimeout)
+	if err != nil {
+		return Config{}, err
+	}
+
+	cfg.Monitor.Cooldown, err = optionalDurationEnv(lookup, "ASSISTANT_MONITOR_COOLDOWN", defaultMonitorCooldown)
+	if err != nil {
+		return Config{}, err
+	}
+
+	cfg.Monitor.HTTPChecks, err = optionalMonitorHTTPChecksEnv(lookup, "ASSISTANT_MONITOR_HTTP_CHECKS_JSON")
+	if err != nil {
+		return Config{}, err
+	}
+	if err := ValidateAndNormalizeMonitorConfig(&cfg.Monitor); err != nil {
 		return Config{}, err
 	}
 
@@ -498,6 +573,30 @@ func optionalMCPServersEnv(lookup func(string) (string, bool), key string) (map[
 	return servers, nil
 }
 
+func optionalMonitorHTTPChecksEnv(lookup func(string) (string, bool), key string) ([]MonitorHTTPCheckConfig, error) {
+	raw, ok := lookup(key)
+	if !ok {
+		return nil, nil
+	}
+
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+
+	var checks []MonitorHTTPCheckConfig
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&checks); err != nil {
+		return nil, fmt.Errorf("%s must match the supported monitor HTTP check schema: %w", key, err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("%s must contain exactly one JSON array value", key)
+	}
+
+	return checks, nil
+}
+
 func normalizePath(baseDir, path string) (string, error) {
 	if filepath.IsAbs(path) {
 		return filepath.Clean(path), nil
@@ -670,6 +769,94 @@ func ValidateAndNormalizeMCPAdminConfig(admin *MCPAdminConfig) error {
 	}
 	if strings.TrimSpace(port) == "" {
 		return errors.New("ASSISTANT_TOOL_MCP_ADMIN_LISTEN_ADDR must include a TCP port")
+	}
+
+	return nil
+}
+
+func ValidateAndNormalizeMonitorConfig(cfg *MonitorConfig) error {
+	if cfg == nil {
+		return nil
+	}
+
+	cfg.Mode = strings.TrimSpace(strings.ToLower(cfg.Mode))
+	if cfg.Mode == "" {
+		cfg.Mode = defaultMonitorMode
+	}
+
+	switch cfg.Mode {
+	case MonitorModeNotifyOnly, MonitorModeAnalyzeThenNotify, MonitorModeAutoFixDisabled:
+	default:
+		return fmt.Errorf("ASSISTANT_MONITOR_MODE must be one of %s, %s, or %s", MonitorModeNotifyOnly, MonitorModeAnalyzeThenNotify, MonitorModeAutoFixDisabled)
+	}
+
+	if cfg.Interval <= 0 {
+		return errors.New("ASSISTANT_MONITOR_INTERVAL must be greater than zero")
+	}
+	if cfg.Jitter < 0 {
+		return errors.New("ASSISTANT_MONITOR_JITTER must not be negative")
+	}
+	if cfg.Timeout <= 0 {
+		return errors.New("ASSISTANT_MONITOR_TIMEOUT must be greater than zero")
+	}
+	if cfg.Cooldown < 0 {
+		return errors.New("ASSISTANT_MONITOR_COOLDOWN must not be negative")
+	}
+
+	for index := range cfg.HTTPChecks {
+		if err := validateAndNormalizeMonitorHTTPCheck(index, &cfg.HTTPChecks[index]); err != nil {
+			return err
+		}
+	}
+	seenCheckIDs := make(map[string]struct{}, len(cfg.HTTPChecks))
+	for _, check := range cfg.HTTPChecks {
+		if _, exists := seenCheckIDs[check.ID]; exists {
+			return fmt.Errorf("ASSISTANT_MONITOR_HTTP_CHECKS_JSON contains duplicate check id %q", check.ID)
+		}
+		seenCheckIDs[check.ID] = struct{}{}
+	}
+
+	if cfg.Enabled && len(cfg.HTTPChecks) == 0 {
+		return errors.New("ASSISTANT_MONITOR_HTTP_CHECKS_JSON must include at least one HTTP check when monitoring is enabled")
+	}
+
+	return nil
+}
+
+func validateAndNormalizeMonitorHTTPCheck(index int, check *MonitorHTTPCheckConfig) error {
+	check.ID = strings.TrimSpace(check.ID)
+	check.URL = strings.TrimSpace(check.URL)
+	check.Method = strings.ToUpper(strings.TrimSpace(check.Method))
+	if check.Method == "" {
+		check.Method = "GET"
+	}
+
+	if check.ID == "" {
+		return fmt.Errorf("ASSISTANT_MONITOR_HTTP_CHECKS_JSON check %d id is required", index)
+	}
+	if check.URL == "" {
+		return fmt.Errorf("ASSISTANT_MONITOR_HTTP_CHECKS_JSON check %q url is required", check.ID)
+	}
+	parsedURL, err := url.Parse(check.URL)
+	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
+		return fmt.Errorf("ASSISTANT_MONITOR_HTTP_CHECKS_JSON check %q url must be an absolute URL", check.ID)
+	}
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return fmt.Errorf("ASSISTANT_MONITOR_HTTP_CHECKS_JSON check %q url scheme must be http or https", check.ID)
+	}
+
+	check.Headers, err = normalizeStringMap(check.Headers)
+	if err != nil {
+		return fmt.Errorf("ASSISTANT_MONITOR_HTTP_CHECKS_JSON check %q headers: %w", check.ID, err)
+	}
+
+	if len(check.ExpectedStatusCodes) == 0 {
+		check.ExpectedStatusCodes = []int{200}
+	}
+	for _, code := range check.ExpectedStatusCodes {
+		if code < 100 || code > 599 {
+			return fmt.Errorf("ASSISTANT_MONITOR_HTTP_CHECKS_JSON check %q expected status codes must be valid HTTP status codes", check.ID)
+		}
 	}
 
 	return nil
